@@ -110,6 +110,14 @@ pub fn run(paths: Paths) -> anyhow::Result<()> {
 
 /// Binds the socket, replacing a stale one but refusing to run twice.
 fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
+    // sockaddr_un holds 104 bytes including the terminating NUL.
+    let len = socket.as_os_str().len();
+    if len >= 104 {
+        bail!(
+            "the socket path {} is {len} bytes, but macOS allows 103; set XDG_STATE_HOME to a shorter folder",
+            socket.display()
+        );
+    }
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }

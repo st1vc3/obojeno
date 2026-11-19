@@ -7,8 +7,7 @@ struct SettingsView: View {
 
     var body: some View {
         let state = model.state!
-        ScrollView {
-            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 14) {
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 14) {
                 GridRow {
                     Text("Scheme").gridColumnAlignment(.trailing)
                     Picker(
@@ -46,10 +45,12 @@ struct SettingsView: View {
                 GridRow {
                     Text("Duration")
                     HStack {
+                        // Continuous: a step would draw a tick mark per 0.1 s.
                         Slider(
-                            value: Binding(get: { duration ?? state.duration }, set: { duration = $0 }),
-                            in: 0.2...2.0,
-                            step: 0.1
+                            value: Binding(
+                                get: { duration ?? state.duration },
+                                set: { duration = ($0 * 10).rounded() / 10 }),
+                            in: 0.2...2.0
                         ) { editing in
                             if !editing, let duration {
                                 model.configure(ConfigChange(duration: duration))
@@ -87,7 +88,5 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 4)
-        }
-        .frame(height: 360)
     }
 }

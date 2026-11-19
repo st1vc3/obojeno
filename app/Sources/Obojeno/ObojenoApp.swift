@@ -5,6 +5,13 @@ import SwiftUI
 struct ObojenoApp: App {
     @ViewState private var model = AppModel()
 
+    init() {
+        if let path = Snapshot.requested {
+            let model = model
+            DispatchQueue.main.async { Snapshot.run(model: model, to: path) }
+        }
+    }
+
     var body: some Scene {
         MenuBarExtra {
             PopoverView()

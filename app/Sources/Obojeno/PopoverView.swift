@@ -2,7 +2,11 @@ import SwiftUI
 
 struct PopoverView: View {
     @Environment(AppModel.self) private var model
-    @ViewState private var showingSettings = false
+    @ViewState private var showingSettings: Bool
+
+    init(startWithSettings: Bool = false) {
+        _showingSettings = ViewState(initialValue: startWithSettings)
+    }
 
     var body: some View {
         VStack(spacing: 0) {

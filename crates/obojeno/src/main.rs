@@ -288,7 +288,7 @@ fn print_gallery(gallery: &obojeno_core::gallery::Gallery) {
     for folder in &gallery.folders {
         println!("\n{}", folder.path.display());
         match &folder.error {
-            Some(e) => println!("  cannot read: {e}"),
+            Some(e) => println!("  This folder {e}."),
             None if folder.items.is_empty() => println!("  (no images)"),
             None => folder.items.iter().for_each(line),
         }

@@ -7,25 +7,36 @@ struct GalleryView: View {
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 14) {
+        // Sized to the content, scrolling only once it gets taller.
+        ViewThatFits(in: .vertical) {
+            content
+            ScrollView { content }
+        }
+        .frame(maxHeight: 420)
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 14) {
                 if let gallery = model.gallery {
                     if !gallery.recent.isEmpty {
                         Section(title: "Recent") {
+                            // Scrolls edge to edge, past the popover's margins.
                             ScrollView(.horizontal, showsIndicators: false) {
                                 LazyHStack(spacing: 8) {
                                     ForEach(gallery.recent) { item in
                                         Tile(item: item).frame(width: 104)
                                     }
                                 }
-                                .padding(2)
+                                .padding(.vertical, 2)
+                                .padding(.horizontal, 14)
                             }
+                            .padding(.horizontal, -14)
                         }
                     }
                     ForEach(gallery.folders) { folder in
                         Section(title: folder.name, help: folder.path) {
                             if let error = folder.error {
-                                Text("Can't read this folder: \(error)")
+                                Label("This folder \(error).", systemImage: "folder.badge.questionmark")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             } else if folder.items.isEmpty {
@@ -41,9 +52,8 @@ struct GalleryView: View {
                 } else {
                     ProgressView().frame(maxWidth: .infinity, minHeight: 120)
                 }
-            }
         }
-        .frame(height: 360)
+        .padding(.bottom, 2)
     }
 }
 
@@ -76,8 +86,7 @@ private struct Tile: View {
         } label: {
             VStack(spacing: 0) {
                 Thumbnail(path: item.thumbnail, fallback: Color.secondary.opacity(0.15))
-                    .aspectRatio(16 / 10, contentMode: .fill)
-                    .clipped()
+                    .aspectRatio(16 / 10, contentMode: .fit)
                 HStack(spacing: 0) {
                     if item.swatches.isEmpty {
                         Color.secondary.opacity(0.2)
@@ -109,17 +118,21 @@ struct Thumbnail: View {
     let fallback: Color
     @ViewState private var image: NSImage?
 
+    /// Fills whatever frame it gets: the image is overlaid on the fallback
+    /// color (which takes the proposed size) and clipped to it, so wide
+    /// images never spill out.
     var body: some View {
-        ZStack {
-            fallback
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .transition(.opacity)
+        fallback
+            .overlay {
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .transition(.opacity)
+                }
             }
-        }
-        .task(id: path) {
+            .clipped()
+            .task(id: path) {
             guard let path else {
                 image = nil
                 return

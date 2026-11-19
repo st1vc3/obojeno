@@ -77,7 +77,7 @@ pub fn build(
                 Err(e) => Folder {
                     path,
                     items: Vec::new(),
-                    error: Some(e.to_string()),
+                    error: Some(folder_problem(&e)),
                 },
             }
         })
@@ -97,6 +97,16 @@ pub fn build(
         pending: missing.len(),
     };
     (gallery, missing)
+}
+
+/// Why a folder cannot be shown, phrased to follow "This folder".
+fn folder_problem(e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => "doesn't exist".to_owned(),
+        std::io::ErrorKind::PermissionDenied => "can't be read without permission".to_owned(),
+        std::io::ErrorKind::NotADirectory => "isn't a folder".to_owned(),
+        _ => format!("can't be read ({e})"),
+    }
 }
 
 /// Makes the thumbnail and finds the source color of one image. Slow (a full

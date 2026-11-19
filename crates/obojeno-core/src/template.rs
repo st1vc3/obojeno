@@ -98,6 +98,8 @@ impl PerMode {
 pub struct Context {
     colors: BTreeMap<String, PerMode>,
     term: BTreeMap<String, PerMode>,
+    /// `palettes.<name>.<tone>`, e.g. `palettes.source.50.hex`.
+    palettes: BTreeMap<String, Vec<Formats>>,
     source_color: Formats,
     mode: Mode,
     is_dark: bool,
@@ -125,9 +127,15 @@ impl Context {
                 (format!("color{i}"), entry)
             })
             .collect();
+        let palettes = palette
+            .palettes
+            .iter()
+            .map(|(name, tones)| (name.clone(), tones.iter().map(|&c| c.into()).collect()))
+            .collect();
         Self {
             colors,
             term,
+            palettes,
             source_color: palette.source.into(),
             mode,
             is_dark: mode.is_dark(),
@@ -210,6 +218,19 @@ mod tests {
         let dark = r.render("test", src, &ctx(Mode::Dark)).unwrap();
         let (a, b) = dark.split_once('=').unwrap();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn tonal_palettes_are_indexed_by_tone() {
+        let r = Renderer::new();
+        let out = r
+            .render(
+                "test",
+                "{{palettes.source.0.hex}} {{palettes.primary.100.hex}}",
+                &ctx(Mode::Dark),
+            )
+            .unwrap();
+        assert_eq!(out, "#000000 #ffffff");
     }
 
     #[test]

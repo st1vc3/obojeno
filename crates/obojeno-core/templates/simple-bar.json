@@ -3,20 +3,38 @@
     "theme": "{{mode}}"
   },
   "themes": {
-    "colorMain": "{{colors.surface_container_high.default.hex}}",
-    "colorMainAlt": "{{colors.primary_container.default.hex}}",
-    "colorMinor": "{{colors.outline.default.hex}}",
-    "colorAccent": "{{source_color.hex}}",
-    "colorRed": "{{term.color1.default.hex}}",
-    "colorGreen": "{{term.color2.default.hex}}",
-    "colorYellow": "{{term.color3.default.hex}}",
-    "colorOrange": "{{term.color11.default.hex}}",
-    "colorBlue": "{{term.color4.default.hex}}",
-    "colorMagenta": "{{term.color5.default.hex}}",
-    "colorCyan": "{{term.color6.default.hex}}",
-    "colorBlack": "{{colors.surface_container_lowest.default.hex}}",
-    "colorWhite": "{{colors.on_surface.default.hex}}",
-    "colorForeground": "{{colors.on_surface.default.hex}}",
-    "colorBackground": "{{colors.surface.default.hex}}"
+{% if is_dark %}
+    "colorMain": "{{palettes.source.11.hex}}",
+    "colorMainAlt": "{{palettes.source.19.hex}}",
+    "colorMinor": "{{palettes.source.29.hex}}",
+    "colorAccent": "{{palettes.source.60.hex}}",
+    "colorRed": "{{palettes.source.58.hex}}",
+    "colorGreen": "{{palettes.source.63.hex}}",
+    "colorYellow": "{{palettes.source.80.hex}}",
+    "colorOrange": "{{palettes.source.71.hex}}",
+    "colorBlue": "{{palettes.source.52.hex}}",
+    "colorMagenta": "{{palettes.source.55.hex}}",
+    "colorCyan": "{{palettes.source.75.hex}}",
+    "colorBlack": "{{palettes.source.2.hex}}",
+    "colorWhite": "{{palettes.source.96.hex}}",
+    "colorForeground": "{{palettes.source.93.hex}}",
+    "colorBackground": "{{palettes.source.3.hex}}"
+{% else %}
+    "colorMain": "{{palettes.source.92.hex}}",
+    "colorMainAlt": "{{palettes.source.85.hex}}",
+    "colorMinor": "{{palettes.source.75.hex}}",
+    "colorAccent": "{{palettes.source.50.hex}}",
+    "colorRed": "{{palettes.source.70.hex}}",
+    "colorGreen": "{{palettes.source.75.hex}}",
+    "colorYellow": "{{palettes.source.88.hex}}",
+    "colorOrange": "{{palettes.source.80.hex}}",
+    "colorBlue": "{{palettes.source.64.hex}}",
+    "colorMagenta": "{{palettes.source.67.hex}}",
+    "colorCyan": "{{palettes.source.84.hex}}",
+    "colorBlack": "{{palettes.source.8.hex}}",
+    "colorWhite": "{{palettes.source.98.hex}}",
+    "colorForeground": "{{palettes.source.10.hex}}",
+    "colorBackground": "{{palettes.source.97.hex}}"
+{% endif %}
   }
 }

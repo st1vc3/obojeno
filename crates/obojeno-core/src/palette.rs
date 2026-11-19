@@ -14,6 +14,7 @@ use material_colors::blend::harmonize;
 use material_colors::color::Rgb;
 use material_colors::dynamic_color::{DynamicScheme, Variant};
 use material_colors::hct::Hct;
+use material_colors::palette::TonalPalette;
 use material_colors::quantize::{Quantizer, QuantizerCelebi};
 use material_colors::scheme::Scheme;
 use material_colors::score::Score;
@@ -174,6 +175,11 @@ pub struct Palette {
     pub dark: Roles,
     pub terminal_light: [Color; 16],
     pub terminal_dark: [Color; 16],
+    /// Tonal palettes, each 101 colors indexed by tone (0 black, 100 white):
+    /// the scheme's `primary`, `secondary`, `tertiary`, `neutral`,
+    /// `neutral_variant` and `error`, plus `source`, the source color at
+    /// every tone with its own chroma (vivid, whatever the scheme).
+    pub palettes: BTreeMap<String, Vec<Color>>,
 }
 
 impl Palette {
@@ -192,6 +198,7 @@ impl Palette {
             source,
             variant,
             contrast,
+            palettes: tonal_palettes(source, variant, contrast),
             terminal_light: terminal(source, variant, &light, Mode::Light),
             terminal_dark: terminal(source, variant, &dark, Mode::Dark),
             light,
@@ -273,6 +280,35 @@ fn scheme(source: Color, variant: SchemeVariant, is_dark: bool, contrast: f64) -
         .into_iter()
         .map(|(name, rgb)| (name.to_owned(), rgb.into()))
         .collect()
+}
+
+fn tonal_palettes(
+    source: Color,
+    variant: SchemeVariant,
+    contrast: f64,
+) -> BTreeMap<String, Vec<Color>> {
+    let dynamic =
+        DynamicScheme::by_variant(source.into(), &variant.material(), true, Some(contrast));
+    let hct = Hct::new(source.into());
+    let tones = |palette: &TonalPalette| (0..=100).map(|t| Color::from(palette.tone(t))).collect();
+    [
+        ("primary", tones(&dynamic.primary_palette)),
+        ("secondary", tones(&dynamic.secondary_palette)),
+        ("tertiary", tones(&dynamic.tertiary_palette)),
+        ("neutral", tones(&dynamic.neutral_palette)),
+        ("neutral_variant", tones(&dynamic.neutral_variant_palette)),
+        ("error", tones(&dynamic.error_palette)),
+        (
+            "source",
+            tones(&TonalPalette::from_hue_and_chroma(
+                hct.get_hue(),
+                hct.get_chroma(),
+            )),
+        ),
+    ]
+    .into_iter()
+    .map(|(name, tones)| (name.to_owned(), tones))
+    .collect()
 }
 
 /// Canonical HCT hues of the six ANSI accent colors: red, green, yellow, blue,
@@ -421,6 +457,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn tonal_palettes_cover_every_tone() {
+        let source = Color::new(0xfd, 0x5e, 0x37);
+        let p = Palette::from_source(source, SchemeVariant::TonalSpot, 0.0);
+        for name in [
+            "primary",
+            "secondary",
+            "tertiary",
+            "neutral",
+            "neutral_variant",
+            "error",
+            "source",
+        ] {
+            let tones = &p.palettes[name];
+            assert_eq!(tones.len(), 101, "{name}");
+            assert_eq!(tones[0], Color::new(0, 0, 0), "{name} tone 0");
+            assert_eq!(tones[100], Color::new(255, 255, 255), "{name} tone 100");
+            assert!(
+                tones[30].luminance() < tones[70].luminance(),
+                "{name} gets lighter"
+            );
+        }
+        // The source palette keeps the source's chroma; tonal-spot's
+        // primary is deliberately calmer.
+        let chroma = |c: Color| Hct::new(c.into()).get_chroma();
+        assert!(chroma(p.palettes["source"][55]) > chroma(p.palettes["primary"][55]) + 10.0);
     }
 
     #[test]

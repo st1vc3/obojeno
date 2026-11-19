@@ -8,26 +8,26 @@ expression: snapshot
     "theme": "dark"
   },
   "themes": {
-    "colorMain": "#322828",
-    "colorMainAlt": "#733337",
-    "colorMinor": "#9f8c8c",
-    "colorAccent": "#e82649",
-    "colorRed": "#ff918e",
-    "colorGreen": "#9fbb55",
-    "colorYellow": "#e7a437",
-    "colorOrange": "#ffc166",
-    "colorBlue": "#a0aaff",
-    "colorMagenta": "#f093cd",
-    "colorCyan": "#33c0db",
-    "colorBlack": "#140c0c",
-    "colorWhite": "#f0dede",
-    "colorForeground": "#f0dede",
-    "colorBackground": "#1a1111"
+    "colorMain": "#44000c",
+    "colorMainAlt": "#640016",
+    "colorMinor": "#8e0024",
+    "colorAccent": "#ff5165",
+    "colorRed": "#ff425c",
+    "colorGreen": "#ff6471",
+    "colorYellow": "#ffb3b5",
+    "colorOrange": "#ff8c92",
+    "colorBlue": "#ed2a4c",
+    "colorMagenta": "#f83353",
+    "colorCyan": "#ff9ea2",
+    "colorBlack": "#1a0002",
+    "colorWhite": "#fff0f0",
+    "colorForeground": "#ffe5e5",
+    "colorBackground": "#210003"
   }
 }
 ==> /home/.cache/obojeno/wallpaper-blur.jpg
 <13283 bytes>
 ==> /home/.cache/obojeno/wallpaper-blur.jpg.source
 key
-==> reload: Command(["osascript", "-e", "tell application id \"tracesOf.Uebersicht\" to reload widget id \"simple-bar-index-jsx\"", "-e", "delay 1", "-e", "tell application id \"tracesOf.Uebersicht\" to reload widget id \"simple-bar-index-jsx\""])
+==> reload: Command(["osascript", "-e", "tell application id \"tracesOf.Uebersicht\" to refresh", "-e", "delay 1", "-e", "tell application id \"tracesOf.Uebersicht\" to refresh"])
 ==> only if running: Übersicht

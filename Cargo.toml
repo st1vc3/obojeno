@@ -17,7 +17,7 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 insta = "1.49.0"
 material-colors = { version = "0.5.0", features = ["quantize", "serde"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha2 = "0.11.1"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
@@ -25,7 +25,7 @@ toml = "1.2.1"
 toml_edit = "0.25.19"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-upon = "0.11.0"
+upon = { version = "0.11.0", features = ["serde", "functions"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

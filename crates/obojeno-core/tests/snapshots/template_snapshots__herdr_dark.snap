@@ -1,0 +1,26 @@
+---
+source: crates/obojeno-core/tests/template_snapshots.rs
+expression: snapshot
+---
+==> /home/.cache/obojeno/herdr.toml
+[theme.custom]
+accent = "#ffb3b5"
+panel_bg = "reset"
+sidebar_bg = "#221919"
+active_row_bg = "#322828"
+selection_bg = "#5d3f40"
+surface0 = "#271d1d"
+surface1 = "#322828"
+surface_dim = "#1a1111"
+overlay0 = "#524343"
+overlay1 = "#9f8c8c"
+text = "#f0dede"
+subtext0 = "#d7c1c1"
+mauve = "#e6c18d"
+red = "#ff918e"
+green = "#9fbb55"
+yellow = "#e7a437"
+blue = "#a0aaff"
+teal = "#33c0db"
+peach = "#ffc166"
+==> reload: ["herdr", "server", "reload-config"]

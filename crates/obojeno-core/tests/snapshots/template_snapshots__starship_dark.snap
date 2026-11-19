@@ -1,0 +1,39 @@
+---
+source: crates/obojeno-core/tests/template_snapshots.rs
+expression: snapshot
+---
+==> /home/.cache/obojeno/starship.toml
+palette = "obojeno"
+
+[palettes.obojeno]
+primary = "#ffb3b5"
+on_primary = "#561d22"
+primary_container = "#733337"
+on_primary_container = "#ffdada"
+secondary = "#e6bdbd"
+secondary_container = "#5d3f40"
+tertiary = "#e6c18d"
+tertiary_container = "#5b421a"
+error = "#ffb4ab"
+surface = "#1a1111"
+surface_container = "#271d1d"
+surface_container_high = "#322828"
+on_surface = "#f0dede"
+on_surface_variant = "#d7c1c1"
+outline = "#9f8c8c"
+black = "#322828"
+red = "#ff918e"
+green = "#9fbb55"
+yellow = "#e7a437"
+blue = "#a0aaff"
+purple = "#f093cd"
+cyan = "#33c0db"
+white = "#d7c1c1"
+bright-black = "#9f8c8c"
+bright-red = "#ffbcb8"
+bright-green = "#b4da51"
+bright-yellow = "#ffc166"
+bright-blue = "#c3c8ff"
+bright-purple = "#ffb6e1"
+bright-cyan = "#21dfff"
+bright-white = "#f0dede"

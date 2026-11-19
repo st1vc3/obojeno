@@ -1,0 +1,30 @@
+---
+source: crates/obojeno-core/tests/template_snapshots.rs
+expression: snapshot
+---
+==> /home/.simplebarrc
+{
+  "global": {
+    "theme": "light"
+  },
+  "themes": {
+    "colorMain": "#f6e4e4",
+    "colorMainAlt": "#ffdada",
+    "colorMinor": "#857373",
+    "colorAccent": "#8f4a4d",
+    "colorRed": "#a24545",
+    "colorGreen": "#536c08",
+    "colorYellow": "#875a06",
+    "colorOrange": "#6e4804",
+    "colorBlue": "#505caf",
+    "colorMagenta": "#97477c",
+    "colorCyan": "#0a6d7e",
+    "colorBlack": "#ffffff",
+    "colorWhite": "#221919",
+    "colorForeground": "#221919",
+    "colorBackground": "#fff8f7"
+  }
+}
+==> /home/.cache/obojeno/wallpaper-blur.jpg
+<13283 bytes>
+==> reload: ["osascript", "-e", "tell application id \"tracesOf.Uebersicht\" to refresh widget id \"simple-bar-index-jsx\""]

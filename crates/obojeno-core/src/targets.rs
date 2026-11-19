@@ -162,7 +162,7 @@ pub fn builtin(name: &str) -> Option<Target> {
                     },
                 },
                 Output {
-                    path: "{{cache}}/wallpaper-blur.jpg".to_owned(),
+                    path: "{{blur}}".to_owned(),
                     kind: OutputKind::BlurredWallpaper {
                         width: 900,
                         sigma: 18.0,
@@ -179,9 +179,15 @@ pub fn builtin(name: &str) -> Option<Target> {
             only_if_running: Some("Übersicht".to_owned()),
             // By default the colors merge into the file itself. Point `base`
             // at a tracked copy to keep your settings there instead.
-            options: vec![("base", Some("~/.simplebarrc"))],
+            // `blur` is for custom styles with a blurred wallpaper behind the
+            // bar, e.g. "~/Library/Application Support/Übersicht/widgets/
+            // simple-bar/wallpaper-blur.jpg" for `url("simple-bar/wallpaper-blur.jpg")`.
+            options: vec![
+                ("base", Some("~/.simplebarrc")),
+                ("blur", Some("{{cache}}/wallpaper-blur.jpg")),
+            ],
             setup: "Nothing to do: colors are merged into ~/.simplebarrc (or into `base`, written to ~/.simplebarrc). \
-                    The bar's background can use {{cache}}/wallpaper-blur.jpg.",
+                    Custom styles can show a blurred wallpaper behind the bar from `blur`.",
             ..base
         },
         "nvim" => Target {

@@ -154,21 +154,23 @@ pub fn render_target(
     let home = dirs.home.display().to_string();
     let cache = dirs.cache.display().to_string();
     let config = dirs.config.display().to_string();
-    // Options may be paths with `~`; expand them so templates get usable paths.
-    let options: Vec<(String, String)> = resolved
+    let paths = Context::new(palette, mode, wallpaper.map(|w| w.path.as_path())).with_vars([
+        ("home", home.as_str()),
+        ("cache", cache.as_str()),
+        ("config", config.as_str()),
+    ]);
+    // Options are templates too (`{{cache}}/...`) and may start with `~`.
+    let options = resolved
         .options
         .iter()
-        .map(|(k, v)| (k.clone(), dirs.expand(v).display().to_string()))
-        .collect();
-    let ctx = Context::new(palette, mode, wallpaper.map(|w| w.path.as_path())).with_vars(
-        [
-            ("home", home.as_str()),
-            ("cache", cache.as_str()),
-            ("config", config.as_str()),
-        ]
-        .into_iter()
-        .chain(options.iter().map(|(k, v)| (k.as_str(), v.as_str()))),
-    );
+        .map(|(k, v)| {
+            let value = renderer
+                .render(&format!("{name} option {k}"), v, &paths)
+                .map_err(template_err)?;
+            Ok((k.clone(), dirs.expand(&value).display().to_string()))
+        })
+        .collect::<Result<Vec<(String, String)>, OutputError>>()?;
+    let ctx = paths.with_vars(options.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     let render = |what: &str, source: &str| {
         renderer
             .render(&format!("{name} {what}"), source, &ctx)

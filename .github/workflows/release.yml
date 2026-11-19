@@ -67,8 +67,8 @@ jobs:
       - name: Verify
         run: |
           codesign --verify --strict --deep target/Obojeno.app
-          lipo -verify_arch arm64 x86_64 target/Obojeno.app/Contents/MacOS/Obojeno
-          lipo -verify_arch arm64 x86_64 target/Obojeno.app/Contents/Helpers/obojeno
+          test "$(lipo -archs target/Obojeno.app/Contents/MacOS/Obojeno | tr " " "\n" | sort | xargs)" = "arm64 x86_64"
+          test "$(lipo -archs target/Obojeno.app/Contents/Helpers/obojeno | tr " " "\n" | sort | xargs)" = "arm64 x86_64"
           test "$(target/Obojeno.app/Contents/Helpers/obojeno --version)" = "obojeno $VERSION"
 
       - name: Notarize

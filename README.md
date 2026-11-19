@@ -22,6 +22,37 @@ color, the same as Android and matugen produce.
 
 > Needs macOS 26 (Tahoe) or later.
 
+## See it
+
+**A new wallpaper**, with the growing-circle transition. The bar re-colors
+with it:
+
+![Two wallpaper changes with the circle transition](docs/wallpaper.webp)
+
+<sub>[Full quality video](docs/wallpaper.mp4)</sub>
+
+**Everything follows**: kitty, the window borders, the bar and the starship
+prompt re-color with each wallpaper, and again when switching between dark
+and light:
+
+![kitty re-coloring with the wallpaper and with light and dark mode](docs/theming.webp)
+
+<sub>[Full quality video](docs/theming.mp4)</sub>
+
+**The menu bar app**: the gallery and its settings, on Liquid Glass.
+
+<p>
+  <img src="docs/gallery.png" alt="The gallery: recent wallpapers, the library and a folder" width="49%">
+  <img src="docs/settings.png" alt="Settings: login, updates, scheme, transitions, Spaces, grain and corners" width="49%">
+</p>
+
+**Closing the lid** (MacBooks): the edges soften, darkness comes down from the
+top and the wallpaper blurs and sinks, following the lid as it moves:
+
+![The lid animation from open to nearly shut and back](docs/lid.webp)
+
+<sub>[Full quality video](docs/lid.mp4)</sub>
+
 ## Install
 
 ### Homebrew

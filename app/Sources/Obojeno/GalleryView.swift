@@ -65,7 +65,8 @@ private struct Section<Content: View>: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.75))
+                .foregroundStyle(.white.opacity(0.85))
+                .legibleOnGlass()
                 .help(help ?? title)
             content
         }

@@ -298,37 +298,24 @@ fn noise_image(size: CGSize, scale: CGFloat) -> Option<CFRetained<CGImage>> {
 /// How much of each side `feather_image` fades out.
 const FEATHER: CGFloat = 0.2;
 
+/// How much of the bottom side fades: little, since the wallpaper sinks
+/// toward it and glows there last.
+const FEATHER_BOTTOM: CGFloat = 0.05;
+
 /// A mask that is opaque in the middle and fades to clear over the outer
-/// `FEATHER` of each side. Small, since it is smooth when stretched.
+/// `FEATHER` of the top and sides, `FEATHER_BOTTOM` at the bottom. Small,
+/// since it is smooth when stretched.
 fn feather_image() -> Option<CFRetained<CGImage>> {
-    const W: usize = 320;
-    const H: usize = 200;
-    // 0 at an edge, 1 from `FEATHER` inward, eased.
-    let ramp = |i: usize, n: usize| {
-        #[allow(clippy::cast_precision_loss)] // Small sizes.
-        let from_edge = (i.min(n - 1 - i) as f64 + 0.5) / n as f64;
-        let x = (from_edge / FEATHER).min(1.0);
-        x * x * (3.0 - 2.0 * x)
-    };
-    let mut pixels = vec![0u8; W * H];
-    for (y, row) in pixels.as_chunks_mut::<W>().0.iter_mut().enumerate() {
-        let vertical = ramp(y, H);
-        for (x, px) in row.iter_mut().enumerate() {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0..=255.
-            {
-                *px = (ramp(x, W) * vertical * 255.0).round() as u8;
-            }
-        }
-    }
-    // SAFETY: `pixels` is `H` rows of `W` bytes and outlives the context,
-    // which is dropped below; the image copies the pixels.
+    let mut pixels = feather_pixels();
+    // SAFETY: `pixels` is `FEATHER_H` rows of `FEATHER_W` bytes and outlives
+    // the context, which is dropped below; the image copies the pixels.
     unsafe {
         let context = CGBitmapContextCreate(
             pixels.as_mut_ptr().cast(),
-            W,
-            H,
+            FEATHER_W,
+            FEATHER_H,
             8,
-            W,
+            FEATHER_W,
             None,
             CGImageAlphaInfo::Only.0,
         )?;
@@ -336,8 +323,33 @@ fn feather_image() -> Option<CFRetained<CGImage>> {
     }
 }
 
-/// Where the feather mask goes at progress `t`: at 0 its fading edges lie
-/// outside `bounds`, then they move in.
+const FEATHER_W: usize = 320;
+const FEATHER_H: usize = 200;
+
+/// The mask's alpha, rows top to bottom.
+fn feather_pixels() -> Vec<u8> {
+    const W: usize = FEATHER_W;
+    const H: usize = FEATHER_H;
+    // 0 at an edge, 1 from `width` inward, eased.
+    #[allow(clippy::cast_precision_loss)] // Small sizes.
+    let ramp =
+        |from_edge: usize, n: usize, width: f64| ease((from_edge as f64 + 0.5) / n as f64 / width);
+    let mut pixels = vec![0u8; W * H];
+    // Rows run top to bottom.
+    for (y, row) in pixels.as_chunks_mut::<W>().0.iter_mut().enumerate() {
+        let vertical = ramp(y, H, FEATHER).min(ramp(H - 1 - y, H, FEATHER_BOTTOM));
+        for (x, px) in row.iter_mut().enumerate() {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0..=255.
+            {
+                *px = (ramp(x.min(W - 1 - x), W, FEATHER) * vertical * 255.0).round() as u8;
+            }
+        }
+    }
+    pixels
+}
+
+/// Where the feather mask goes as the edges soften (`t` from 0 to 1): at 0
+/// its fading edges lie outside `bounds`, at 1 they end on them.
 fn feather_frame(bounds: CGRect, t: CGFloat) -> CGRect {
     let outside = 1.0 / (1.0 - 2.0 * FEATHER) + 0.02;
     let k = outside + (1.0 - outside) * t;
@@ -360,11 +372,6 @@ fn lid_window(screen: &NSScreen, mtm: MainThreadMarker) -> Option<LidWindow> {
     CATransaction::begin();
     CATransaction::setDisableActions(true);
     root.setBackgroundColor(Some(&NSColor::blackColor().CGColor()));
-    // Perspective, so tipping back looks like it goes away from you.
-    root.setSublayerTransform(CATransform3D {
-        m34: -1.0 / 900.0,
-        ..identity()
-    });
     let sinking = CALayer::new();
     sinking.setAnchorPoint(CGPoint::new(0.5, 0.0));
     sinking.setBounds(bounds);
@@ -582,10 +589,22 @@ fn show_lid(t: f64, mtm: MainThreadMarker) {
             // Only a hint of tipping away (negative rotation; positive
             // brings the top toward you); mostly it sinks toward the
             // bottom edge it is anchored at.
-            let tilt = CATransform3D::new_rotation(-t * 10.0_f64.to_radians(), 1.0, 0.0, 0.0);
-            let shrink = 1.0 - 0.14 * t;
-            lid.sinking.setTransform(tilt.scale(shrink, shrink, 1.0));
-            lid.feather.setFrame(feather_frame(lid.sinking.bounds(), t));
+            // The edges soften first; only then does the wallpaper move, so
+            // its border is already faded out when it leaves the screen's.
+            let (soften, sink) = lid_stages(t);
+            let tilt = CATransform3D::new_rotation(-sink * 10.0_f64.to_radians(), 1.0, 0.0, 0.0);
+            let shrink = 1.0 - 0.14 * sink;
+            // Perspective last, about the layer's own anchor (its bottom
+            // center), so it stays symmetric: the root layer of a view is
+            // anchored at its corner, which skews a sublayer transform.
+            let perspective = CATransform3D {
+                m34: -1.0 / 900.0,
+                ..identity()
+            };
+            lid.sinking
+                .setTransform(tilt.scale(shrink, shrink, 1.0).concat(perspective));
+            lid.feather
+                .setFrame(feather_frame(lid.sinking.bounds(), soften));
             // A wide, soft curtain: fully open at 0, only a glow at the
             // bottom at 1.
             let edge = 1.5 - 1.25 * t;
@@ -600,6 +619,13 @@ fn show_lid(t: f64, mtm: MainThreadMarker) {
             CATransaction::commit();
         }
     });
+}
+
+/// How far the edges have softened and the wallpaper has sunk at progress
+/// `t`: softening takes the first fifth, sinking the rest.
+fn lid_stages(t: f64) -> (f64, f64) {
+    const SOFTEN: f64 = 0.2;
+    (ease(t / SOFTEN), ease((t - SOFTEN) / (1.0 - SOFTEN)))
 }
 
 /// Smoothstep on `x` clamped to 0..=1.
@@ -856,6 +882,16 @@ mod tests {
     }
 
     #[test]
+    fn edges_soften_before_the_wallpaper_moves() {
+        assert_eq!(lid_stages(0.0), (0.0, 0.0));
+        let (soften, sink) = lid_stages(0.2);
+        assert!((soften - 1.0).abs() < f64::EPSILON && sink.abs() < f64::EPSILON);
+        let (soften, sink) = lid_stages(0.6);
+        assert!((soften - 1.0).abs() < f64::EPSILON && sink > 0.0 && sink < 1.0);
+        assert_eq!(lid_stages(1.0), (1.0, 1.0));
+    }
+
+    #[test]
     fn feather_starts_outside_the_screen_and_moves_in() {
         let bounds = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(1000.0, 600.0));
         let open = feather_frame(bounds, 0.0);
@@ -864,6 +900,20 @@ mod tests {
         let shut = feather_frame(bounds, 1.0);
         assert!((shut.size.width - 1000.0).abs() < 1e-9);
         assert!(feather_image().is_some());
+    }
+
+    #[test]
+    fn feather_fades_the_bottom_least() {
+        let pixels = feather_pixels();
+        let at = |x: usize, y: usize| pixels[y * FEATHER_W + x];
+        let middle = FEATHER_W / 2;
+        assert_eq!(at(middle, FEATHER_H / 2), 255, "opaque in the middle");
+        assert_eq!(at(middle, 0), 0, "clear at the top edge");
+        assert_eq!(at(0, FEATHER_H / 2), 0, "clear at the side edges");
+        assert_eq!(at(FEATHER_W - 1, FEATHER_H / 2), 0);
+        // Twelve rows in: past the bottom fade, well inside the top one.
+        assert_eq!(at(middle, FEATHER_H - 1 - 12), 255);
+        assert!(at(middle, 12) < 128);
     }
 
     #[test]

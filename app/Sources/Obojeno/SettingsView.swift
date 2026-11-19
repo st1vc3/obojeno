@@ -14,7 +14,7 @@ struct SettingsView: View {
         let state = model.state!
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Settings").font(.title3.weight(.semibold))
+                Text("Settings").font(.title3.weight(.semibold)).legibleOnGlass()
                 Spacer()
                 Button("Done", action: done)
                     .buttonStyle(CapsuleButtonStyle())
@@ -183,7 +183,8 @@ struct SectionTitle: View {
     var body: some View {
         Text(title)
             .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.white.opacity(0.85))
+            .legibleOnGlass()
             .padding(.top, 4)
             .padding(.leading, 4)
     }
@@ -196,9 +197,18 @@ struct Caption: View {
     var body: some View {
         Text(text)
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.white.opacity(0.8))
+            .legibleOnGlass()
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 4)
+    }
+}
+
+extension View {
+    /// Text straight on the clear glass panel: a soft shadow keeps it
+    /// readable over bright wallpapers.
+    func legibleOnGlass() -> some View {
+        shadow(color: .black.opacity(0.45), radius: 2, y: 0.5)
     }
 }
 

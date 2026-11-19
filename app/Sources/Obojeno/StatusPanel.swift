@@ -20,7 +20,8 @@ final class StatusPanel: NSObject {
 
     init(model: AppModel) {
         self.model = model
-        host = NSHostingController(rootView: AnyView(PopoverView().environment(model)))
+        let settings = ProcessInfo.processInfo.environment["OBOJENO_OPEN"] == "settings"
+        host = NSHostingController(rootView: AnyView(PopoverView(startWithSettings: settings).environment(model)))
         super.init()
         host.sizingOptions = [.preferredContentSize]
         // Clear glass, like WallBe: the wallpaper shows through, refracted.
@@ -38,8 +39,9 @@ final class StatusPanel: NSObject {
             button.setAccessibilityLabel("obojeno")
         }
         updateIcon()
-        // A developer aid: open right away, to look at it without a click.
-        if ProcessInfo.processInfo.environment["OBOJENO_OPEN"] == "1" {
+        // A developer aid: open right away (OBOJENO_OPEN=1, or =settings on
+        // the settings), to look at it without a click.
+        if ProcessInfo.processInfo.environment["OBOJENO_OPEN"] != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.open() }
         }
     }

@@ -57,6 +57,7 @@ private struct Header: View {
         HStack(spacing: 8) {
             Text("obojeno")
                 .font(.title3.weight(.bold))
+                .legibleOnGlass()
             Spacer(minLength: 8)
             // Neighboring glass shapes blend into each other.
             GlassEffectContainer(spacing: 8) {

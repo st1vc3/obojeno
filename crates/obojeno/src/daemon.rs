@@ -23,7 +23,7 @@ use obojeno_core::{Mode, Palette};
 use crate::apply::{self, Applied};
 use crate::paths::Paths;
 use crate::state::{Source, State};
-use crate::{actions, gallery, macos, watch};
+use crate::{actions, desktop, gallery, macos, watch};
 
 /// Work for the main thread.
 pub enum Job {
@@ -111,6 +111,11 @@ pub fn run(paths: Paths) -> anyhow::Result<()> {
     daemon().gallery.lock().expect("gallery lock").index =
         Index::load(&gallery::index_file(&daemon().paths));
     let _watchers = watch::start(&daemon().paths.config_file)?;
+    // Before the first theme, so a broken config shows up as an apply error.
+    if let Ok(config) = Config::load(&daemon().paths.config_file) {
+        desktop::apply_settings(config.finish, config.lid_animation, mtm);
+    }
+    desktop::watch_lid();
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     // Theme once at start, so the desktop is right after login.
@@ -218,6 +223,9 @@ fn error(e: anyhow::Error) -> Reply {
 fn handle_change(change: Change) -> anyhow::Result<()> {
     match change {
         Change::Space => {
+            if let Some(mtm) = MainThreadMarker::new() {
+                desktop::screens_changed(mtm);
+            }
             let config = Config::load(&daemon().paths.config_file)?;
             let shown = macos::current_wallpaper()?;
             let chosen = daemon()
@@ -280,6 +288,9 @@ fn publish(applied: &Applied, config: &Config) -> anyhow::Result<()> {
         &applied.palette,
         config,
     )?;
+    if let Some(mtm) = MainThreadMarker::new() {
+        desktop::apply_settings(config.finish, config.lid_animation, mtm);
+    }
     *daemon().current.lock().expect("state lock") = Some(state.clone());
     *daemon().config_text.lock().expect("config lock") =
         std::fs::read_to_string(&daemon().paths.config_file).unwrap_or_default();

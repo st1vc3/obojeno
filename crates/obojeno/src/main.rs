@@ -1,8 +1,10 @@
 mod actions;
 mod apply;
 mod daemon;
+mod desktop;
 mod gallery;
 mod imageio;
+mod lid;
 mod macos;
 mod paths;
 mod reload;

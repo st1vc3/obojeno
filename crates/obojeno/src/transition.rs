@@ -9,17 +9,16 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
+use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, MainThreadOnly as _};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEvent,
-    NSImageScaling, NSScreen, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
-    NSWorkspaceDesktopImageAllowClippingKey, NSWorkspaceDesktopImageFillColorKey,
-    NSWorkspaceDesktopImageScalingKey,
+    NSApplication, NSApplicationActivationPolicy, NSColor, NSEvent, NSImageScaling, NSScreen,
+    NSWindow, NSWorkspace, NSWorkspaceDesktopImageAllowClippingKey,
+    NSWorkspaceDesktopImageFillColorKey, NSWorkspaceDesktopImageScalingKey,
 };
 use objc2_core_foundation::{CFRunLoop, CGFloat, CGPoint, CGRect, CGSize, kCFRunLoopDefaultMode};
-use objc2_core_graphics::{CGImage, CGMutablePath, CGWindowLevelForKey, CGWindowLevelKey};
+use objc2_core_graphics::{CGImage, CGMutablePath};
 use objc2_foundation::{NSNumber, NSString, ns_string};
 use objc2_quartz_core::{
     CABasicAnimation, CALayer, CALayerContentsGravity, CAMediaTiming as _, CAMediaTimingFunction,
@@ -29,7 +28,7 @@ use objc2_quartz_core::{
 };
 use obojeno_core::config::TransitionStyle;
 
-use crate::imageio;
+use crate::{desktop, imageio};
 
 /// Time for macOS to draw the new wallpaper under the overlay before it
 /// starts to move.
@@ -132,35 +131,11 @@ impl Overlay {
         let image = imageio::cg_image(Path::new(&path)).map_err(anyhow::Error::msg)?;
 
         let frame = screen.frame();
-        // SAFETY: a plain borderless window; it is closed explicitly and not
-        // released on close, so the Retained stays valid.
-        let window = unsafe {
-            let window = NSWindow::initWithContentRect_styleMask_backing_defer(
-                NSWindow::alloc(mtm),
-                frame,
-                NSWindowStyleMask::Borderless,
-                NSBackingStoreType::Buffered,
-                false,
-            );
-            window.setReleasedWhenClosed(false);
-            window
-        };
-        // Right above the wallpaper, below desktop icons and every window.
-        let desktop = CGWindowLevelForKey(CGWindowLevelKey::DesktopWindowLevelKey);
-        window.setLevel(desktop as isize + 1);
-        window.setCollectionBehavior(
-            NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::Stationary
-                | NSWindowCollectionBehavior::IgnoresCycle,
-        );
-        window.setIgnoresMouseEvents(true);
-        window.setHasShadow(false);
-        window.setOpaque(false);
-        window.setBackgroundColor(Some(&NSColor::clearColor()));
-
-        let view = window.contentView().context("window has no content view")?;
-        view.setWantsLayer(true);
-        let root = view.layer().context("view has no layer")?;
+        let window = desktop::overlay_window(frame, desktop::Layer::Wallpaper, mtm);
+        let root = window
+            .contentView()
+            .and_then(|v| v.layer())
+            .context("window has no layer")?;
         let bounds = CGRect::new(CGPoint::new(0.0, 0.0), frame.size);
 
         CATransaction::begin();
@@ -284,7 +259,7 @@ fn farthest_corner(bounds: CGRect, p: CGPoint) -> CGFloat {
 
 /// How macOS draws the wallpaper on this screen, as a layer gravity, plus
 /// the color around images that do not cover the screen.
-fn scaling(
+pub(crate) fn scaling(
     workspace: &NSWorkspace,
     screen: &NSScreen,
     image: &CGImage,
@@ -331,7 +306,7 @@ fn scaling(
 
 /// A Core Foundation object seen as an Objective-C object (they are
 /// toll-free bridged).
-fn cf_object<T: AsRef<AnyObject>>(value: &T) -> &AnyObject {
+pub(crate) fn cf_object<T: AsRef<AnyObject>>(value: &T) -> &AnyObject {
     value.as_ref()
 }
 

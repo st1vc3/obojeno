@@ -21,6 +21,8 @@
         };
       });
 
+      homeManagerModules.default = import ./nix/hm-module.nix self;
+
       formatter = forAllSystems (pkgs: pkgs.nixfmt);
     };
 }

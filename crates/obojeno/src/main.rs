@@ -6,6 +6,7 @@ mod imageio;
 mod macos;
 mod paths;
 mod reload;
+mod service;
 mod state;
 mod transition;
 mod watch;
@@ -72,6 +73,11 @@ enum Command {
     },
     /// List recent wallpapers and the images in the wallpaper folders
     Gallery,
+    /// Run the daemon at login (a launchd agent)
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
     /// Run in the background: follow wallpaper and appearance changes, and
     /// serve the menu bar app
     Daemon,
@@ -84,6 +90,16 @@ enum Command {
     },
     /// List the built-in targets, or show how to set one up
     Targets { name: Option<String> },
+}
+
+#[derive(Clone, Copy, Subcommand)]
+enum ServiceAction {
+    /// Start the daemon now and at every login
+    Install,
+    /// Stop it and no longer start it at login
+    Uninstall,
+    /// Whether it is installed and running
+    Status,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -149,6 +165,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             },
         },
         Command::Color { color, .. } => Request::SetColor { color },
+        Command::Service { action } => {
+            run_service(action)?;
+            return Ok(ExitCode::SUCCESS);
+        }
         Command::Daemon => {
             daemon::run(paths)?;
             return Ok(ExitCode::SUCCESS);
@@ -200,6 +220,28 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         None => actions::execute(&paths, &request)?.report,
     };
     Ok(print_report(&report, &paths))
+}
+
+fn run_service(action: ServiceAction) -> anyhow::Result<()> {
+    let describe = |running: bool| if running { "running" } else { "not running" };
+    match action {
+        ServiceAction::Install => {
+            service::install()?;
+            println!("obojeno now runs at login (log: ~/Library/Logs/obojeno.log).");
+        }
+        ServiceAction::Uninstall => {
+            service::uninstall()?;
+            println!("obojeno no longer runs at login.");
+        }
+        ServiceAction::Status => match service::status()? {
+            service::Status::NotInstalled => println!("not installed"),
+            service::Status::Installed { running } => println!("installed, {}", describe(running)),
+            service::Status::Managed { running } => {
+                println!("managed by home-manager, {}", describe(running));
+            }
+        },
+    }
+    Ok(())
 }
 
 fn swatch(c: Color) -> String {

@@ -78,6 +78,15 @@ fn daemon() -> &'static Daemon {
 pub fn run(paths: Paths) -> anyhow::Result<()> {
     let mtm = MainThreadMarker::new().context("the daemon must run on the main thread")?;
     let socket = ipc::socket_path(&paths.state);
+    // Not an error: launchd restarts a daemon that fails, and the one
+    // already running is doing the job.
+    if UnixStream::connect(&socket).is_ok() {
+        eprintln!(
+            "obojeno: a daemon is already running ({})",
+            socket.display()
+        );
+        return Ok(());
+    }
     let listener = bind(&socket)?;
     tracing::info!("listening on {}", socket.display());
 
@@ -120,12 +129,6 @@ fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
     }
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    }
-    if UnixStream::connect(socket).is_ok() {
-        bail!(
-            "another obojeno daemon is already running ({})",
-            socket.display()
-        );
     }
     match std::fs::remove_file(socket) {
         Ok(()) => {}

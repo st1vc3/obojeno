@@ -12,10 +12,14 @@ pub const LABEL: &str = "io.github.st1vc3.obojeno";
 pub enum Status {
     NotInstalled,
     /// Installed by `obojeno service install`.
-    Installed { running: bool },
-    /// The agent file belongs to someone else (a home-manager link into the
-    /// Nix store); obojeno leaves it alone.
-    Managed { running: bool },
+    Installed {
+        running: bool,
+    },
+    /// The agent belongs to home-manager (its program is in the Nix store);
+    /// obojeno leaves it alone.
+    Managed {
+        running: bool,
+    },
 }
 
 fn plist_path() -> anyhow::Result<PathBuf> {
@@ -41,8 +45,14 @@ pub fn status() -> anyhow::Result<Status> {
     let running = Command::new("/bin/launchctl")
         .args(["print", &format!("{}/{LABEL}", domain())])
         .output()
-        .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("state = running"));
-    Ok(if meta.file_type().is_symlink() {
+        .is_ok_and(|o| {
+            o.status.success() && String::from_utf8_lossy(&o.stdout).contains("state = running")
+        });
+    // home-manager copies its agents (launchd ignores some symlinks), so
+    // recognize them by their program living in the Nix store.
+    let managed = meta.file_type().is_symlink()
+        || std::fs::read_to_string(&path).is_ok_and(|plist| plist.contains("/nix/store/"));
+    Ok(if managed {
         Status::Managed { running }
     } else {
         Status::Installed { running }
@@ -74,7 +84,9 @@ pub fn install() -> anyhow::Result<()> {
 pub fn uninstall() -> anyhow::Result<()> {
     match status()? {
         Status::NotInstalled => Ok(()),
-        Status::Managed { .. } => bail!("the login agent is managed elsewhere (home-manager); change it there"),
+        Status::Managed { .. } => {
+            bail!("the login agent is managed elsewhere (home-manager); change it there")
+        }
         Status::Installed { .. } => {
             bootout();
             let path = plist_path()?;
@@ -91,7 +103,10 @@ fn bootout() {
 }
 
 fn launchctl(args: &[&str]) -> anyhow::Result<()> {
-    let output = Command::new("/bin/launchctl").args(args).output().context("running launchctl")?;
+    let output = Command::new("/bin/launchctl")
+        .args(args)
+        .output()
+        .context("running launchctl")?;
     if !output.status.success() {
         bail!(
             "launchctl {} failed: {}",
@@ -103,7 +118,9 @@ fn launchctl(args: &[&str]) -> anyhow::Result<()> {
 }
 
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// The agent: start at login, restart after crashes but not after a clean
@@ -151,8 +168,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.plist");
         std::fs::write(&path, agent_plist("/Apps/A&B.app/obojeno", "/logs/o.log")).unwrap();
-        let output = Command::new("/usr/bin/plutil").arg("-lint").arg(&path).output().unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+        let output = Command::new("/usr/bin/plutil")
+            .arg("-lint")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
         let json = Command::new("/usr/bin/plutil")
             .args(["-convert", "json", "-o", "-"])
             .arg(&path)

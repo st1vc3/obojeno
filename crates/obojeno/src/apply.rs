@@ -81,6 +81,9 @@ pub fn apply(
         .with_context(|| format!("writing {}", palette_path.display()))?;
 
     let targets = render_and_write(&config, paths, &palette, mode, wallpaper.as_ref())?;
+    if let (Source::Wallpaper, Some(w)) = (&state.source, &wallpaper) {
+        state.record_wallpaper(&w.path);
+    }
     state.save(&paths.state_file())?;
 
     Ok(Applied {

@@ -1,6 +1,7 @@
 //! What obojeno remembers between runs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use obojeno_core::Color;
@@ -10,6 +11,9 @@ use serde::{Deserialize, Serialize};
 /// Source colors of recently used wallpapers, by content hash, so re-applying
 /// never decodes an image twice. Bounded; oldest entries are dropped.
 const MAX_CACHED_COLORS: usize = 256;
+
+/// Wallpapers remembered for the gallery's recent row.
+const MAX_HISTORY: usize = 30;
 
 /// Bumped when source color extraction changes, invalidating cached colors.
 /// 2: decoding through ImageIO.
@@ -32,6 +36,15 @@ pub struct State {
     extraction_version: u32,
     /// Most recent first.
     source_colors: Vec<(String, Color)>,
+    /// Wallpapers themed from, most recent first.
+    pub history: Vec<HistoryEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    pub path: PathBuf,
+    /// Seconds since the Unix epoch.
+    pub used_at: u64,
 }
 
 impl State {
@@ -49,9 +62,9 @@ impl State {
             state
         } else {
             Self {
-                source: state.source,
                 extraction_version: EXTRACTION_VERSION,
                 source_colors: Vec::new(),
+                ..state
             }
         }
     }
@@ -68,6 +81,22 @@ impl State {
             .iter()
             .find(|(k, _)| k == key)
             .map(|(_, c)| *c)
+    }
+
+    /// Moves `path` to the front of the history.
+    pub fn record_wallpaper(&mut self, path: &Path) {
+        self.history.retain(|e| e.path != path);
+        let used_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        self.history.insert(
+            0,
+            HistoryEntry {
+                path: path.to_owned(),
+                used_at,
+            },
+        );
+        self.history.truncate(MAX_HISTORY);
     }
 
     pub fn cache_color(&mut self, key: &str, color: Color) {
@@ -131,6 +160,24 @@ mod tests {
         let state = State::load(&path);
         assert!(state.cached_color("a").is_none());
         assert!(matches!(state.source, Source::Color { .. }));
+    }
+
+    #[test]
+    fn history_is_most_recent_first_without_duplicates() {
+        let mut state = State::default();
+        for p in ["/a", "/b", "/a"] {
+            state.record_wallpaper(Path::new(p));
+        }
+        let paths: Vec<_> = state
+            .history
+            .iter()
+            .map(|e| e.path.to_str().unwrap())
+            .collect();
+        assert_eq!(paths, ["/a", "/b"]);
+        for i in 0..MAX_HISTORY + 5 {
+            state.record_wallpaper(Path::new(&format!("/{i}")));
+        }
+        assert_eq!(state.history.len(), MAX_HISTORY);
     }
 
     #[test]

@@ -21,7 +21,7 @@ libc = "0.2"
 notify = "8.2.2"
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSCell", "NSColor", "NSEvent", "NSGraphics", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow", "NSWorkspace", "objc2-core-foundation", "objc2-core-graphics", "objc2-quartz-core"] }
-objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "objc2", "CFCGTypes", "CFData", "CFDate", "CFDictionary", "CFRunLoop", "CFString", "CFURL"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "objc2", "CFCGTypes", "CFData", "CFDate", "CFDictionary", "CFNumber", "CFRunLoop", "CFString", "CFURL"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGBitmapContext", "CGColor", "CGColorSpace", "CGContext", "CGGeometry", "CGImage", "CGPath", "CGWindowLevel", "objc2"] }
 objc2-image-io = { version = "0.3.2", default-features = false, features = ["std", "CGImageSource", "objc2-core-graphics"] }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CAAnimation", "CALayer", "CAMediaTiming", "CAMediaTimingFunction", "CAShapeLayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"] }

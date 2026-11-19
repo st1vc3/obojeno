@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::config::TransitionStyle;
+use crate::gallery::Gallery;
 use crate::{Color, Mode, Palette};
 
 pub const SOCKET_NAME: &str = "obojeno.sock";
@@ -55,6 +56,9 @@ pub enum Request {
     SetColor {
         color: Option<Color>,
     },
+    /// Recent wallpapers and the configured folders. Images not indexed yet
+    /// follow as `gallery` replies on `subscribe` connections.
+    Gallery,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,6 +66,7 @@ pub enum Request {
 pub enum Reply {
     Report(Report),
     State(State),
+    Gallery(Gallery),
     Error { message: String },
 }
 

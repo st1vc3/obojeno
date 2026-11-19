@@ -19,7 +19,9 @@ use crate::{imageio, macos, transition};
 /// sense for the daemon.
 pub fn execute(paths: &Paths, request: &Request) -> anyhow::Result<Applied> {
     match request {
-        Request::Subscribe | Request::State => anyhow::bail!("only the daemon answers {request:?}"),
+        Request::Subscribe | Request::State | Request::Gallery => {
+            anyhow::bail!("only the daemon answers {request:?}")
+        }
         Request::Apply { mode } => apply::apply(paths, *mode, None),
         Request::SetWallpaper {
             path,

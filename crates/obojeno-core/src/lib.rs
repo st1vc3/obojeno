@@ -2,6 +2,7 @@
 
 pub mod color;
 pub mod config;
+pub mod gallery;
 pub mod ipc;
 pub mod output;
 pub mod palette;

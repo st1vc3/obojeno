@@ -4,12 +4,18 @@
 use std::path::Path;
 
 use image::{DynamicImage, RgbaImage};
-use objc2_core_foundation::{CFRetained, CFString, CFURL, CFURLPathStyle, CGPoint, CGRect, CGSize};
+use objc2_core_foundation::{
+    CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType, CFURL, CFURLPathStyle,
+    CGPoint, CGRect, CGSize,
+};
 use objc2_core_graphics::{
     CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo,
     CGImageByteOrderInfo, kCGColorSpaceSRGB,
 };
-use objc2_image_io::CGImageSource;
+use objc2_image_io::{
+    CGImageSource, kCGImageSourceCreateThumbnailFromImageAlways,
+    kCGImageSourceCreateThumbnailWithTransform, kCGImageSourceThumbnailMaxPixelSize,
+};
 
 /// Decodes `path` to sRGB pixels, converting from embedded color profiles
 /// (Display P3 wallpapers, for example). Falls back to the pure-Rust decoders
@@ -20,9 +26,11 @@ pub fn decode(path: &Path) -> Result<DynamicImage, String> {
     })
 }
 
-/// The image as macOS decodes it, for drawing with Core Graphics.
-pub fn cg_image(path: &Path) -> Result<CFRetained<CGImage>, String> {
-    let not_readable = || "macOS cannot read it as an image".to_owned();
+fn not_readable() -> String {
+    "macOS cannot read it as an image".to_owned()
+}
+
+fn open(path: &Path) -> Result<CFRetained<CGImageSource>, String> {
     let cf_path = CFString::from_str(&path.to_string_lossy());
     let url = CFURL::with_file_system_path(
         None,
@@ -31,19 +39,51 @@ pub fn cg_image(path: &Path) -> Result<CFRetained<CGImage>, String> {
         false,
     )
     .ok_or_else(not_readable)?;
-    // SAFETY: no options dictionaries are passed.
-    unsafe {
-        let source = CGImageSource::with_url(&url, None).ok_or_else(not_readable)?;
-        source
-            .image_at_index(source.primary_image_index(), None)
-            .ok_or_else(not_readable)
+    // SAFETY: no options dictionary is passed.
+    unsafe { CGImageSource::with_url(&url, None) }.ok_or_else(not_readable)
+}
+
+/// The image as macOS decodes it, for drawing with Core Graphics.
+pub fn cg_image(path: &Path) -> Result<CFRetained<CGImage>, String> {
+    let source = open(path)?;
+    // SAFETY: no options dictionary is passed.
+    unsafe { source.image_at_index(source.primary_image_index(), None) }.ok_or_else(not_readable)
+}
+
+/// A small version of the image, at most `max_side` pixels wide or high.
+/// Much faster than decoding the whole image: formats with embedded
+/// previews or scaled decoding (JPEG, HEIC) never decode every pixel.
+pub fn thumbnail(path: &Path, max_side: u32) -> Result<DynamicImage, String> {
+    let source = open(path)?;
+    let max_side = CFNumber::new_i32(i32::try_from(max_side).unwrap_or(i32::MAX));
+    // SAFETY: the keys are valid ImageIO constants.
+    let (always, max_size, transform) = unsafe {
+        (
+            kCGImageSourceCreateThumbnailFromImageAlways,
+            kCGImageSourceThumbnailMaxPixelSize,
+            kCGImageSourceCreateThumbnailWithTransform,
+        )
+    };
+    let yes: &CFType = CFBoolean::new(true);
+    let options = CFDictionary::<CFString, CFType>::from_slices(
+        &[always, max_size, transform],
+        &[yes, &max_side, yes],
+    );
+    // SAFETY: the options have the types ImageIO documents for these keys.
+    let image = unsafe {
+        source.thumbnail_at_index(source.primary_image_index(), Some(options.as_opaque()))
     }
+    .ok_or_else(not_readable)?;
+    to_pixels(&image)
 }
 
 fn decode_with_imageio(path: &Path) -> Result<DynamicImage, String> {
-    let not_readable = || "macOS cannot read it as an image".to_owned();
-    let image = cg_image(path)?;
-    let (width, height) = (CGImage::width(Some(&image)), CGImage::height(Some(&image)));
+    to_pixels(&*cg_image(path)?)
+}
+
+/// Draws the image into an sRGB bitmap, converting from its color profile.
+fn to_pixels(image: &CGImage) -> Result<DynamicImage, String> {
+    let (width, height) = (CGImage::width(Some(image)), CGImage::height(Some(image)));
     if width == 0 || height == 0 {
         return Err(not_readable());
     }
@@ -70,7 +110,7 @@ fn decode_with_imageio(path: &Path) -> Result<DynamicImage, String> {
         CGPoint::new(0.0, 0.0),
         CGSize::new(width as f64, height as f64),
     );
-    CGContext::draw_image(Some(&context), rect, Some(&image));
+    CGContext::draw_image(Some(&context), rect, Some(image));
     drop(context);
 
     let width = u32::try_from(width).map_err(|_| "image too large")?;
@@ -121,6 +161,16 @@ mod tests {
         );
         let image = decode(heic).unwrap();
         assert_eq!((image.width(), image.height()), (160, 100));
+    }
+
+    #[test]
+    fn thumbnails_fit_the_size_and_keep_the_aspect_ratio() {
+        let heic = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/lagoon.heic"
+        ));
+        let thumb = thumbnail(heic, 64).unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (64, 40));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! threads only parse and queue; all work runs one job at a time on the main
 //! thread, which AppKit (transitions) requires anyway.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -16,13 +16,14 @@ use dispatch2::DispatchQueue;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use obojeno_core::config::Config;
+use obojeno_core::gallery::{Gallery, Index, IndexEntry};
 use obojeno_core::ipc::{self, Reply, Request};
 use obojeno_core::{Mode, Palette};
 
 use crate::apply::{self, Applied};
 use crate::paths::Paths;
 use crate::state::{Source, State};
-use crate::{actions, macos, watch};
+use crate::{actions, gallery, macos, watch};
 
 /// Work for the main thread.
 pub enum Job {
@@ -30,6 +31,10 @@ pub enum Job {
     Request(Request, Sender<Reply>),
     /// Something changed on the system (see `watch`).
     Change(Change),
+    /// A gallery image finished indexing.
+    Indexed(PathBuf, Result<IndexEntry, String>),
+    /// Index the gallery ahead of time, so the menu bar shows it at once.
+    WarmGallery,
 }
 
 /// Something that may have changed; the daemon checks and re-themes if so.
@@ -47,6 +52,18 @@ struct Daemon {
     subscribers: Mutex<Vec<Sender<Reply>>>,
     /// What is on screen; `None` until the first apply.
     current: Mutex<Option<ipc::State>>,
+    gallery: Mutex<GalleryWork>,
+}
+
+/// The gallery index and the images being worked on.
+#[derive(Default)]
+struct GalleryWork {
+    index: Index,
+    indexing: HashSet<PathBuf>,
+    /// Images that could not be indexed; not retried until the daemon restarts.
+    failed: HashSet<PathBuf>,
+    /// Results since subscribers last got the gallery.
+    unannounced: usize,
 }
 
 static DAEMON: OnceLock<Daemon> = OnceLock::new();
@@ -67,6 +84,7 @@ pub fn run(paths: Paths) -> anyhow::Result<()> {
             jobs: Mutex::new(VecDeque::new()),
             subscribers: Mutex::new(Vec::new()),
             current: Mutex::new(None),
+            gallery: Mutex::new(GalleryWork::default()),
         })
         .unwrap_or_else(|_| unreachable!("run is called once"));
 
@@ -74,11 +92,14 @@ pub fn run(paths: Paths) -> anyhow::Result<()> {
         .name("obojeno-socket".into())
         .spawn(move || accept(&listener))?;
 
+    daemon().gallery.lock().expect("gallery lock").index =
+        Index::load(&gallery::index_file(&daemon().paths));
     let _watchers = watch::start(&daemon().paths.config_file)?;
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     // Theme once at start, so the desktop is right after login.
     submit(Job::Change(Change::Wallpaper));
+    submit(Job::WarmGallery);
     app.run();
     Ok(())
 }
@@ -131,14 +152,22 @@ fn drain() {
                     tracing::warn!("{change:?} change: {e:#}");
                 }
             }
+            Job::Indexed(path, result) => indexed(path, result),
+            Job::WarmGallery => {
+                if let Err(e) = gallery_now() {
+                    tracing::warn!("gallery: {e:#}");
+                }
+            }
         }
     }
     DRAINING.set(false);
 }
 
 fn handle(request: Request) -> Reply {
-    if request == Request::State {
-        return current_state().map_or_else(error, Reply::State);
+    match request {
+        Request::State => return current_state().map_or_else(error, Reply::State),
+        Request::Gallery => return gallery_now().map_or_else(error, Reply::Gallery),
+        _ => {}
     }
     let paths = &daemon().paths;
     let result = actions::execute(paths, &request).and_then(|applied| {
@@ -197,11 +226,7 @@ fn publish(applied: &Applied, config: &Config) -> anyhow::Result<()> {
         config,
     )?;
     *daemon().current.lock().expect("state lock") = Some(state.clone());
-    daemon()
-        .subscribers
-        .lock()
-        .expect("subscribers lock")
-        .retain(|tx| tx.send(Reply::State(state.clone())).is_ok());
+    broadcast(&Reply::State(state));
     Ok(())
 }
 
@@ -223,6 +248,104 @@ fn state_from(
         transition: config.transition.style,
         duration: config.transition.duration,
     })
+}
+
+/// The gallery as far as it is indexed; starts indexing the rest.
+fn gallery_now() -> anyhow::Result<Gallery> {
+    let paths = &daemon().paths;
+    let config = Config::load(&paths.config_file)?;
+    let state = State::load(&paths.state_file());
+    let (current, mode) =
+        current_state().map_or_else(|_| (None, macos::system_mode()), |s| (s.wallpaper, s.mode));
+    let mut work = daemon().gallery.lock().expect("gallery lock");
+    let (mut gallery, missing) = gallery::build(
+        paths,
+        &config,
+        &state,
+        &mut work.index,
+        current.as_deref(),
+        mode,
+    );
+    let todo: Vec<PathBuf> = missing
+        .into_iter()
+        .filter(|p| !work.failed.contains(p) && !work.indexing.contains(p))
+        .collect();
+    work.indexing.extend(todo.iter().cloned());
+    gallery.pending = work.indexing.len();
+    work.index.save(&gallery::index_file(paths))?;
+    drop(work);
+    if !todo.is_empty() {
+        tracing::info!("indexing {} gallery images", todo.len());
+        start_indexing(todo);
+    }
+    Ok(gallery)
+}
+
+/// Indexes images on a few background threads, reporting each result to the
+/// main thread.
+fn start_indexing(todo: Vec<PathBuf>) {
+    let queue = Mutex::new(todo);
+    let spawned = std::thread::Builder::new()
+        .name("obojeno-index".into())
+        .spawn(move || {
+            std::thread::scope(|scope| {
+                for _ in 0..gallery::parallelism() {
+                    scope.spawn(|| {
+                        loop {
+                            let next = queue.lock().expect("queue lock").pop();
+                            let Some(path) = next else { break };
+                            let result = gallery::index_image(&daemon().paths, &path);
+                            submit(Job::Indexed(path, result));
+                        }
+                    });
+                }
+            });
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("cannot start indexing: {e}");
+    }
+}
+
+fn indexed(path: PathBuf, result: Result<IndexEntry, String>) {
+    let paths = &daemon().paths;
+    let mut work = daemon().gallery.lock().expect("gallery lock");
+    work.indexing.remove(&path);
+    match result {
+        Ok(entry) => {
+            // Clicking it in the gallery then themes without decoding it again.
+            let mut state = State::load(&paths.state_file());
+            state.cache_color(&entry.key, entry.source);
+            if let Err(e) = state.save(&paths.state_file()) {
+                tracing::warn!("{e:#}");
+            }
+            work.index.entries.insert(path, entry);
+        }
+        Err(e) => {
+            tracing::warn!("cannot index {}: {e}", path.display());
+            work.failed.insert(path);
+        }
+    }
+    work.unannounced += 1;
+    // Batch updates while many images finish at once.
+    let announce = work.indexing.is_empty() || work.unannounced >= gallery::parallelism();
+    if announce {
+        work.unannounced = 0;
+    }
+    drop(work);
+    if announce {
+        match gallery_now() {
+            Ok(g) => broadcast(&Reply::Gallery(g)),
+            Err(e) => tracing::warn!("gallery: {e:#}"),
+        }
+    }
+}
+
+fn broadcast(reply: &Reply) {
+    daemon()
+        .subscribers
+        .lock()
+        .expect("subscribers lock")
+        .retain(|tx| tx.send(reply.clone()).is_ok());
 }
 
 fn current_state() -> anyhow::Result<ipc::State> {

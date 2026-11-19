@@ -1,6 +1,7 @@
 mod actions;
 mod apply;
 mod daemon;
+mod gallery;
 mod imageio;
 mod macos;
 mod paths;
@@ -69,6 +70,8 @@ enum Command {
         #[arg(long, conflicts_with = "color")]
         wallpaper: bool,
     },
+    /// List recent wallpapers and the images in the wallpaper folders
+    Gallery,
     /// Run in the background: follow wallpaper and appearance changes, and
     /// serve the menu bar app
     Daemon,
@@ -150,6 +153,20 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             daemon::run(paths)?;
             return Ok(ExitCode::SUCCESS);
         }
+        Command::Gallery => {
+            let gallery = match daemon::request(&paths, &Request::Gallery)? {
+                Some(Reply::Gallery(gallery)) => gallery,
+                Some(Reply::Error { message }) => anyhow::bail!(message),
+                Some(_) => anyhow::bail!("unexpected reply from the daemon"),
+                None => gallery::build_blocking(
+                    &paths,
+                    macos::current_wallpaper().ok().as_deref(),
+                    macos::system_mode(),
+                )?,
+            };
+            print_gallery(&gallery);
+            return Ok(ExitCode::SUCCESS);
+        }
         Command::Preview { image, scheme } => {
             let config = Config::load(&paths.config_file)?;
             let image = match image {
@@ -177,7 +194,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let report = match daemon::request(&paths, &request)? {
         Some(Reply::Report(report)) => report,
         Some(Reply::Error { message }) => anyhow::bail!(message),
-        Some(Reply::State(_)) => anyhow::bail!("unexpected reply from the daemon"),
+        Some(Reply::State(_) | Reply::Gallery(_)) => {
+            anyhow::bail!("unexpected reply from the daemon")
+        }
         None => actions::execute(&paths, &request)?.report,
     };
     Ok(print_report(&report, &paths))
@@ -245,6 +264,37 @@ fn print_report(report: &Report, paths: &Paths) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+fn print_gallery(gallery: &obojeno_core::gallery::Gallery) {
+    let line = |item: &obojeno_core::gallery::Item| {
+        let swatches: String = if item.swatches.is_empty() {
+            "········".to_owned()
+        } else {
+            item.swatches
+                .iter()
+                .map(|&c| format!("\x1b[48;2;{};{};{}m  \x1b[0m", c.r, c.g, c.b))
+                .collect()
+        };
+        let marker = if item.current { "▶" } else { " " };
+        println!("  {marker} {swatches}  {}", item.path.display());
+    };
+    println!("Recent");
+    if gallery.recent.is_empty() {
+        println!("  (nothing yet)");
+    }
+    gallery.recent.iter().for_each(line);
+    for folder in &gallery.folders {
+        println!("\n{}", folder.path.display());
+        match &folder.error {
+            Some(e) => println!("  cannot read: {e}"),
+            None if folder.items.is_empty() => println!("  (no images)"),
+            None => folder.items.iter().for_each(line),
+        }
+    }
+    if gallery.pending > 0 {
+        println!("\n{} images are still being indexed.", gallery.pending);
     }
 }
 

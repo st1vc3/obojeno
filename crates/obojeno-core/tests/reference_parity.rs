@@ -1,4 +1,5 @@
-//! Source colors must match matugen's, and schemes must match Google's
+//! Source colors must match matugen's (except for images without color),
+//! and schemes must match Google's
 //! material-color-utilities. Regenerate the goldens with
 //! `scripts/update-goldens.sh`.
 
@@ -31,6 +32,15 @@ fn palettes_match_reference_implementations() {
         let source = palette::source_color(&image);
 
         for (variant, golden) in goldens {
+            // matugen falls back to Google blue for images without color;
+            // obojeno deliberately keeps their gray (and themes monochrome).
+            if golden.source == Color::new(0x42, 0x85, 0xf4) {
+                assert!(
+                    palette::is_achromatic(source),
+                    "{name}: expected a gray source, got {source}"
+                );
+                continue;
+            }
             assert_eq!(source, golden.source, "{name}: source color");
             let palette = Palette::from_source(source, variant, 0.0);
             for (mode, expected) in [(Mode::Light, &golden.light), (Mode::Dark, &golden.dark)] {

@@ -28,6 +28,16 @@ const MAX_COLORS: usize = 128;
 /// Quantized colors below this chroma are ignored as source candidates.
 const MIN_CHROMA: f64 = 5.0;
 
+/// Bumped whenever extraction gives different colors for the same image, so
+/// cached source colors are recomputed.
+/// 3: wallpapers without color keep their gray instead of Google blue.
+pub const EXTRACTION_VERSION: u32 = 3;
+
+/// Whether a color is (nearly) gray. Gray sources make monochrome themes.
+pub fn is_achromatic(color: Color) -> bool {
+    Hct::new(color.into()).get_chroma() < MIN_CHROMA
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
 )]
@@ -167,7 +177,14 @@ pub struct Palette {
 }
 
 impl Palette {
+    /// A gray source always gets the monochrome scheme: every other variant
+    /// would invent a hue the wallpaper does not have.
     pub fn from_source(source: Color, variant: SchemeVariant, contrast: f64) -> Self {
+        let variant = if is_achromatic(source) {
+            SchemeVariant::Monochrome
+        } else {
+            variant
+        };
         let contrast = contrast.clamp(-1.0, 1.0);
         let light = scheme(source, variant, false, contrast);
         let dark = scheme(source, variant, true, contrast);
@@ -230,9 +247,19 @@ pub fn source_candidates(image: &DynamicImage) -> Vec<Color> {
         .map(|p| Rgb::new(p.0[0], p.0[1], p.0[2]))
         .collect();
     let mut quantized = QuantizerCelebi::quantize(&pixels, MAX_COLORS);
+    let most_common = quantized
+        .color_to_count
+        .iter()
+        .max_by_key(|&(_, &count)| count)
+        .map(|(&rgb, _)| Color::from(rgb));
     quantized
         .color_to_count
         .retain(|&rgb, _| Hct::new(rgb).get_chroma() >= MIN_CHROMA);
+    // Unlike matugen, which falls back to Google blue, a wallpaper without
+    // color keeps its own gray (and so gets a monochrome theme).
+    if let (true, Some(gray)) = (quantized.color_to_count.is_empty(), most_common) {
+        return vec![gray];
+    }
     Score::score(&quantized.color_to_count, None, None, None)
         .into_iter()
         .map(Color::from)
@@ -322,11 +349,29 @@ mod tests {
     }
 
     #[test]
-    fn gray_image_falls_back_to_blue() {
-        assert_eq!(
-            source_color(&solid(128, 128, 128)),
-            Color::new(66, 133, 244)
-        );
+    fn colorless_images_keep_their_gray() {
+        for (r, g, b) in [(128, 128, 128), (0, 0, 0), (255, 255, 255)] {
+            let source = source_color(&solid(r, g, b));
+            assert_eq!(source, Color::new(r, g, b));
+            let palette = Palette::from_source(source, SchemeVariant::TonalSpot, 0.0);
+            assert_eq!(palette.variant, SchemeVariant::Monochrome);
+            for mode in [Mode::Light, Mode::Dark] {
+                // Errors stay red even in monochrome themes.
+                for (role, &c) in palette
+                    .roles(mode)
+                    .iter()
+                    .filter(|(r, _)| !r.contains("error"))
+                {
+                    assert!(is_achromatic(c), "{mode} {role} {c} has a hue");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fully_transparent_images_fall_back_to_blue() {
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 8, Rgba([9, 9, 9, 0])));
+        assert_eq!(source_color(&img), Color::new(66, 133, 244));
     }
 
     #[test]

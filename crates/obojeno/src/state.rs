@@ -15,9 +15,9 @@ const MAX_CACHED_COLORS: usize = 256;
 /// Wallpapers remembered for the gallery's recent row.
 const MAX_HISTORY: usize = 30;
 
-/// Bumped when source color extraction changes, invalidating cached colors.
-/// 2: decoding through ImageIO.
-const EXTRACTION_VERSION: u32 = 2;
+/// Bumped when source colors change: core's extraction version, plus one
+/// for decoding through ImageIO.
+const EXTRACTION_VERSION: u32 = obojeno_core::palette::EXTRACTION_VERSION * 100 + 1;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]

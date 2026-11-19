@@ -133,15 +133,23 @@ pub struct IndexEntry {
 /// Thumbnails and colors of images seen so far, persisted between runs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Index {
+    /// The extraction version the colors were made with.
+    #[serde(default)]
+    pub version: u32,
     pub entries: BTreeMap<PathBuf, IndexEntry>,
 }
 
 impl Index {
+    /// Loads the index; one made by an older extraction starts over.
     pub fn load(path: &Path) -> Self {
         std::fs::read(path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+            .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok())
+            .filter(|index| index.version == crate::palette::EXTRACTION_VERSION)
+            .unwrap_or_else(|| Self {
+                version: crate::palette::EXTRACTION_VERSION,
+                entries: BTreeMap::new(),
+            })
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -220,7 +228,7 @@ mod tests {
         std::fs::write(&image, b"one").unwrap();
         std::fs::write(&thumb, b"").unwrap();
         let fingerprint = Fingerprint::of(&image).unwrap();
-        let mut index = Index::default();
+        let mut index = Index::load(&dir.path().join("none.json"));
         index.entries.insert(
             image.clone(),
             IndexEntry {

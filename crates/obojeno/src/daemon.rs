@@ -53,6 +53,9 @@ struct Daemon {
     /// What is on screen; `None` until the first apply.
     current: Mutex<Option<ipc::State>>,
     gallery: Mutex<GalleryWork>,
+    /// The config file as last applied, to ignore watcher events for edits
+    /// the daemon made itself.
+    config_text: Mutex<String>,
 }
 
 /// The gallery index and the images being worked on.
@@ -85,6 +88,7 @@ pub fn run(paths: Paths) -> anyhow::Result<()> {
             subscribers: Mutex::new(Vec::new()),
             current: Mutex::new(None),
             gallery: Mutex::new(GalleryWork::default()),
+            config_text: Mutex::new(String::new()),
         })
         .unwrap_or_else(|_| unreachable!("run is called once"));
 
@@ -204,6 +208,10 @@ fn handle_change(change: Change) -> anyhow::Result<()> {
             run_apply(Some(mode), None).map(drop)
         }
         Change::Config => {
+            let text = std::fs::read_to_string(&daemon().paths.config_file).unwrap_or_default();
+            if *daemon().config_text.lock().expect("config lock") == text {
+                return Ok(());
+            }
             tracing::info!("config changed");
             run_apply(None, None).map(drop)
         }
@@ -226,6 +234,8 @@ fn publish(applied: &Applied, config: &Config) -> anyhow::Result<()> {
         config,
     )?;
     *daemon().current.lock().expect("state lock") = Some(state.clone());
+    *daemon().config_text.lock().expect("config lock") =
+        std::fs::read_to_string(&daemon().paths.config_file).unwrap_or_default();
     broadcast(&Reply::State(state));
     Ok(())
 }
@@ -247,6 +257,9 @@ fn state_from(
         palette: palette.clone(),
         transition: config.transition.style,
         duration: config.transition.duration,
+        scheme: config.scheme,
+        contrast: config.contrast,
+        wallpaper_dirs: config.wallpaper_dirs.clone(),
     })
 }
 

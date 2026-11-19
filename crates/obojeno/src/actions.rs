@@ -7,8 +7,9 @@ use std::time::Duration;
 use anyhow::Context as _;
 use objc2_core_foundation::CGPoint;
 use obojeno_core::Mode;
-use obojeno_core::config::{Config, TransitionStyle};
+use obojeno_core::config::{Config, ConfigChange, TransitionStyle};
 use obojeno_core::ipc::{ModeChange, Request};
+use obojeno_core::output::write_if_changed;
 
 use crate::apply::{self, Applied};
 use crate::paths::Paths;
@@ -30,6 +31,10 @@ pub fn execute(paths: &Paths, request: &Request) -> anyhow::Result<Applied> {
             origin,
         } => set_wallpaper(paths, path, *transition, *duration, *origin),
         Request::SetMode { mode } => set_mode(paths, *mode),
+        Request::Configure { change } => {
+            configure(paths, change)?;
+            apply::apply(paths, None, None)
+        }
         Request::SetColor { color } => {
             set_source(
                 paths,
@@ -63,6 +68,20 @@ fn set_wallpaper(
     };
     set_source(paths, Source::Wallpaper)?;
     transition::set_wallpaper(&path, &options, || apply::apply(paths, None, Some(&path)))?
+}
+
+fn configure(paths: &Paths, change: &ConfigChange) -> anyhow::Result<()> {
+    let file = &paths.config_file;
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", file.display())),
+    };
+    let edited = obojeno_core::config::edit(&text, change)
+        .with_context(|| format!("editing {}", file.display()))?;
+    write_if_changed(file, edited.as_bytes())
+        .with_context(|| format!("writing {}", file.display()))?;
+    Ok(())
 }
 
 fn set_mode(paths: &Paths, change: ModeChange) -> anyhow::Result<Applied> {

@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::TransitionStyle;
+use crate::config::{ConfigChange, TransitionStyle};
 use crate::gallery::Gallery;
-use crate::{Color, Mode, Palette};
+use crate::{Color, Mode, Palette, SchemeVariant};
 
 pub const SOCKET_NAME: &str = "obojeno.sock";
 
@@ -59,6 +59,11 @@ pub enum Request {
     /// Recent wallpapers and the configured folders. Images not indexed yet
     /// follow as `gallery` replies on `subscribe` connections.
     Gallery,
+    /// Change settings in the config file (keeping its comments) and
+    /// re-theme.
+    Configure {
+        change: ConfigChange,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -82,6 +87,11 @@ pub struct State {
     pub transition: TransitionStyle,
     /// Seconds.
     pub duration: f64,
+    /// The configured scheme; `palette.variant` is the one in use, which is
+    /// monochrome for gray wallpapers.
+    pub scheme: SchemeVariant,
+    pub contrast: f64,
+    pub wallpaper_dirs: Vec<String>,
 }
 
 /// What happened when theming.

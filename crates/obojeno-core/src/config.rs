@@ -229,6 +229,81 @@ impl Config {
     }
 }
 
+/// Settings the menu bar app changes. `None` leaves a setting alone.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ConfigChange {
+    pub scheme: Option<SchemeVariant>,
+    pub contrast: Option<f64>,
+    pub transition: Option<TransitionStyle>,
+    pub duration: Option<f64>,
+    pub wallpaper_dirs: Option<Vec<String>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum EditError {
+    #[error("the config is not valid TOML: {0}")]
+    Parse(#[from] toml_edit::TomlError),
+    #[error("{0}")]
+    Invalid(String),
+}
+
+/// Applies `change` to the text of a config file, keeping its comments and
+/// formatting. The result is validated by parsing it.
+pub fn edit(text: &str, change: &ConfigChange) -> Result<String, EditError> {
+    use toml_edit::{Array, DocumentMut, Item, Table};
+
+    let mut doc: DocumentMut = text.parse()?;
+    if let Some(scheme) = change.scheme {
+        set(&mut doc["scheme"], scheme.name().into());
+    }
+    if let Some(contrast) = change.contrast {
+        if !(-1.0..=1.0).contains(&contrast) {
+            return Err(EditError::Invalid(format!(
+                "contrast {contrast} is outside -1..=1"
+            )));
+        }
+        set(&mut doc["contrast"], contrast.into());
+    }
+    if let Some(dirs) = &change.wallpaper_dirs {
+        set(
+            &mut doc["wallpaper_dirs"],
+            dirs.iter().map(String::as_str).collect::<Array>().into(),
+        );
+    }
+    if change.transition.is_some() || change.duration.is_some() {
+        if !doc.contains_table("transition") {
+            doc["transition"] = Item::Table(Table::new());
+        }
+        if let Some(style) = change.transition {
+            let name = serde_json::to_value(style)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default();
+            set(&mut doc["transition"]["style"], name.into());
+        }
+        if let Some(duration) = change.duration {
+            if !(0.0..=10.0).contains(&duration) {
+                return Err(EditError::Invalid(format!(
+                    "duration {duration}s is outside 0..=10"
+                )));
+            }
+            set(&mut doc["transition"]["duration"], duration.into());
+        }
+    }
+    let edited = doc.to_string();
+    Config::parse(&edited).map_err(|e| EditError::Invalid(e.to_string()))?;
+    Ok(edited)
+}
+
+/// Replaces a value, keeping the comments and spacing around it.
+fn set(item: &mut toml_edit::Item, mut new: toml_edit::Value) {
+    if let Some(old) = item.as_value() {
+        *new.decor_mut() = old.decor().clone();
+    }
+    *item = toml_edit::Item::Value(new);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,6 +313,71 @@ mod tests {
             std::io::ErrorKind::NotFound,
             path.to_owned(),
         ))
+    }
+
+    #[test]
+    fn edits_keep_comments_and_other_settings() {
+        let text = "# my setup\nscheme = \"vibrant\" # bold\n\n[targets.kitty]\n";
+        let edited = edit(
+            text,
+            &ConfigChange {
+                scheme: Some(SchemeVariant::Content),
+                transition: Some(TransitionStyle::GrowCircle),
+                duration: Some(1.2),
+                wallpaper_dirs: Some(vec!["~/Walls".into()]),
+                ..ConfigChange::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            edited.contains("# my setup") && edited.contains("# bold"),
+            "{edited}"
+        );
+        let config = Config::parse(&edited).unwrap();
+        assert_eq!(config.scheme, SchemeVariant::Content);
+        assert_eq!(config.transition.style, TransitionStyle::GrowCircle);
+        assert!((config.transition.duration - 1.2).abs() < f64::EPSILON);
+        assert_eq!(config.wallpaper_dirs, ["~/Walls"]);
+        assert!(config.targets.contains_key("kitty"));
+    }
+
+    #[test]
+    fn edits_start_from_an_empty_file() {
+        let edited = edit(
+            "",
+            &ConfigChange {
+                duration: Some(0.3),
+                ..ConfigChange::default()
+            },
+        )
+        .unwrap();
+        assert!((Config::parse(&edited).unwrap().transition.duration - 0.3).abs() < f64::EPSILON);
+        assert_eq!(edit("", &ConfigChange::default()).unwrap(), "");
+    }
+
+    #[test]
+    fn edits_reject_bad_values_and_broken_files() {
+        assert!(
+            edit(
+                "",
+                &ConfigChange {
+                    contrast: Some(2.0),
+                    ..ConfigChange::default()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            edit(
+                "",
+                &ConfigChange {
+                    duration: Some(-1.0),
+                    ..ConfigChange::default()
+                }
+            )
+            .is_err()
+        );
+        assert!(edit("[[", &ConfigChange::default()).is_err());
     }
 
     #[test]

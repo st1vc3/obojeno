@@ -170,11 +170,18 @@ pub fn builtin(name: &str) -> Option<Target> {
                     },
                 },
             ],
+            // `refresh` only re-runs the widget; `reload` re-reads ~/.simplebarrc.
+            // simple-bar renders from its localStorage copy before that read
+            // finishes, so the new colors show from the second reload on.
             // AppleScript would launch Übersicht if it is not running.
             reload: vec![cmd(&[
                 "osascript",
                 "-e",
-                "tell application id \"tracesOf.Uebersicht\" to refresh widget id \"simple-bar-index-jsx\"",
+                "tell application id \"tracesOf.Uebersicht\" to reload widget id \"simple-bar-index-jsx\"",
+                "-e",
+                "delay 1",
+                "-e",
+                "tell application id \"tracesOf.Uebersicht\" to reload widget id \"simple-bar-index-jsx\"",
             ])],
             only_if_running: Some("Übersicht".to_owned()),
             // By default the colors merge into the file itself. Point `base`

@@ -10,9 +10,10 @@ struct AppsSection: View {
         SettingsGroup {
             ForEach(Array(model.targets.enumerated()), id: \.element.id) { index, target in
                 if index > 0 { RowDivider() }
-                TargetRow(target: target, isOn: target.enabled) {
-                    model.setTarget(target, enabled: $0)
-                } choose: { option, value in
+                TargetRow(
+                    target: target,
+                    isOn: Binding(get: { target.enabled }, set: { model.setTarget(target, enabled: $0) })
+                ) { option, value in
                     model.setTarget(target, enabled: true, options: [option: value])
                 }
             }
@@ -25,12 +26,11 @@ struct AppsSection: View {
 struct TargetRow: View {
     @Environment(AppModel.self) private var model
     let target: TargetInfo
-    let isOn: Bool
+    let isOn: Binding<Bool>
     /// Values chosen but not saved yet (on the first run).
     var chosen: [String: String] = [:]
-    let toggle: @MainActor @Sendable (Bool) -> Void
     /// Gets a value for the option the target needs (a folder).
-    let choose: @MainActor @Sendable (String, String) -> Void
+    let choose: @MainActor (String, String) -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -51,14 +51,14 @@ struct TargetRow: View {
             } else if target.snippet != nil || target.setUp == false {
                 SetupButton(target: target, attention: status?.attention == true)
             }
-            Toggle(target.title, isOn: Binding(get: { isOn }, set: toggle))
+            Toggle(target.title, isOn: isOn)
                 .toggleStyle(.switch)
                 .labelsHidden()
-                .disabled(!isOn && (!target.installed || missing != nil))
+                .disabled(!isOn.wrappedValue && (!target.installed || missing != nil))
         }
         .frame(minHeight: 44)
         .padding(.vertical, status == nil ? 0 : 4)
-        .opacity(target.installed || isOn ? 1 : 0.55)
+        .opacity(target.installed || isOn.wrappedValue ? 1 : 0.55)
     }
 
     /// The option still without a value.
@@ -70,7 +70,7 @@ struct TargetRow: View {
         if !target.installed { return ("Not found on this Mac", false) }
         if let missing { return ("Choose its \(missing) folder to theme it", true) }
         if let value = target.missing.flatMap({ chosen[$0] }) { return (value, false) }
-        if isOn, target.setUp == false { return ("Needs a one-time setup", true) }
+        if isOn.wrappedValue, target.setUp == false { return ("Needs a one-time setup", true) }
         return nil
     }
 }
@@ -168,12 +168,16 @@ struct WelcomeView: View {
                 ForEach(Array(found.enumerated()), id: \.element.id) { index, target in
                     if index > 0 { RowDivider() }
                     TargetRow(
-                        target: target, isOn: selection.contains(target.name), chosen: options[target.name] ?? [:]
-                    ) { on in
-                        var next = selection
-                        if on { next.insert(target.name) } else { next.remove(target.name) }
-                        chosen = next
-                    } choose: { option, value in
+                        target: target,
+                        isOn: Binding(
+                            get: { selection.contains(target.name) },
+                            set: { on in
+                                var next = selection
+                                if on { next.insert(target.name) } else { next.remove(target.name) }
+                                chosen = next
+                            }),
+                        chosen: options[target.name] ?? [:]
+                    ) { option, value in
                         options[target.name, default: [:]][option] = value
                         chosen = selection.union([target.name])
                     }

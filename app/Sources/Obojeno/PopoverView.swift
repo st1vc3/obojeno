@@ -19,7 +19,13 @@ struct PopoverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if model.connected, model.state != nil {
-                if showingSettings {
+                if model.needsWelcome {
+                    ScrollView {
+                        WelcomeView().padding(.bottom, 4)
+                    }
+                    .scrollIndicators(.never)
+                    .frame(height: PopoverSize.contentHeight + 44)
+                } else if showingSettings {
                     ScrollView {
                         SettingsView { withAnimation(.snappy) { showingSettings = false } }
                             .padding(.bottom, 4)
@@ -45,7 +51,7 @@ struct PopoverView: View {
         .padding(14)
         .frame(width: PopoverSize.width)
         .environment(\.colorScheme, .dark)
-        .tint(.white)
+        .tint(model.accent)
     }
 }
 

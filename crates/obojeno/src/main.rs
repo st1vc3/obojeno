@@ -2,6 +2,7 @@ mod actions;
 mod apply;
 mod daemon;
 mod desktop;
+mod detect;
 mod gallery;
 mod imageio;
 mod lid;
@@ -9,6 +10,7 @@ mod macos;
 mod paths;
 mod reload;
 mod service;
+mod setup;
 mod state;
 mod transition;
 mod watch;
@@ -19,7 +21,7 @@ use std::process::ExitCode;
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use obojeno_core::config::{Config, TransitionStyle};
-use obojeno_core::ipc::{Direction, ModeChange, Outcome, Reply, Report, Request};
+use obojeno_core::ipc::{Direction, ModeChange, Outcome, Reply, Report, Request, TargetInfo};
 use obojeno_core::targets::{self, OutputKind};
 use obojeno_core::{Color, Mode, Palette, SchemeVariant, palette};
 
@@ -108,6 +110,13 @@ enum Command {
     },
     /// List the built-in targets, or show how to set one up
     Targets { name: Option<String> },
+    /// Turn on the targets for the apps installed on this Mac, and show
+    /// what is left to set up
+    Setup {
+        /// Only show what would change
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Clone, Copy, Subcommand)]
@@ -279,12 +288,16 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             print_targets(name.as_deref(), &paths)?;
             return Ok(ExitCode::SUCCESS);
         }
+        Command::Setup { dry_run } => {
+            run_setup(&paths, dry_run)?;
+            return Ok(ExitCode::SUCCESS);
+        }
     };
     // A running daemon does the work, so changes animate and never race it.
     let report = match daemon::request(&paths, &request)? {
         Some(Reply::Report(report)) => report,
         Some(Reply::Error { message }) => anyhow::bail!(message),
-        Some(Reply::State(_) | Reply::Gallery(_)) => {
+        Some(Reply::State(_) | Reply::Gallery(_) | Reply::Targets { .. }) => {
             anyhow::bail!("unexpected reply from the daemon")
         }
         None => actions::execute(&paths, &request)?.report,
@@ -452,17 +465,6 @@ fn print_preview(palette: &Palette, candidates: &[Color]) {
     }
 }
 
-const NVIM_SNIPPET: &str = r#"-- In init.lua: load the obojeno colorscheme and follow it live.
-local colors = vim.fn.expand("~/.cache/obojeno/nvim")
-vim.opt.rtp:prepend(colors)
-if not pcall(vim.cmd.colorscheme, "obojeno") then
-  vim.cmd.colorscheme("default")
-end
-local watcher = vim.uv.new_fs_event()
-watcher:start(colors .. "/colors", {}, vim.schedule_wrap(function()
-  pcall(vim.cmd.colorscheme, "obojeno")
-end))"#;
-
 fn print_targets(name: Option<&str>, paths: &Paths) -> anyhow::Result<()> {
     let config = Config::load(&paths.config_file)?;
     let Some(name) = name else {
@@ -506,8 +508,73 @@ fn print_targets(name: Option<&str>, paths: &Paths) -> anyhow::Result<()> {
         }
     }
     println!("\nSetup: {}", target.setup);
-    if name == "nvim" {
-        println!("\n{NVIM_SNIPPET}");
+    if let Some(snippet) = target.snippet {
+        println!("\n{snippet}");
+    }
+    Ok(())
+}
+
+fn run_setup(paths: &Paths, dry_run: bool) -> anyhow::Result<()> {
+    let config = Config::load(&paths.config_file)?;
+    let infos = setup::targets(paths)?;
+    let change = setup::enable_found(&infos, &config);
+    let found: std::collections::BTreeSet<String> = change
+        .targets
+        .as_ref()
+        .map(|t| t.keys().cloned().collect())
+        .unwrap_or_default();
+    let turning_on = |name: &str| found.contains(name);
+    let width = infos.iter().map(|t| t.title.len()).max().unwrap_or(0);
+    for t in &infos {
+        let status = if turning_on(&t.name) {
+            if dry_run {
+                "found, would turn on"
+            } else {
+                "found, turned on"
+            }
+        } else if t.enabled {
+            "on"
+        } else if !t.installed {
+            "not found"
+        } else if let Some(option) = &t.missing {
+            &format!("found, needs `{option}` in the config")
+        } else {
+            "off"
+        };
+        let on = t.enabled || turning_on(&t.name);
+        println!(
+            "  {} {:width$}  {status}",
+            if on { "●" } else { "○" },
+            t.title
+        );
+    }
+    if !dry_run && change.targets.is_some() {
+        let request = Request::Configure { change };
+        match daemon::request(paths, &request)? {
+            Some(Reply::Error { message }) => anyhow::bail!(message),
+            Some(_) => {}
+            None => {
+                actions::execute(paths, &request)?;
+            }
+        }
+    }
+    let todo: Vec<&TargetInfo> = infos
+        .iter()
+        // Steps for targets turned on now, unless already done, and for ones
+        // known to need them; not for what obojeno cannot check.
+        .filter(|t| {
+            t.snippet.is_some()
+                && match t.set_up {
+                    Some(set_up) => !set_up && (t.enabled || turning_on(&t.name)),
+                    None => turning_on(&t.name),
+                }
+        })
+        .collect();
+    for t in todo {
+        println!("\n{}: {}", t.title, t.setup);
+        if let Some(snippet) = &t.snippet {
+            println!("\n{snippet}");
+        }
     }
     Ok(())
 }

@@ -61,9 +61,10 @@ top and the wallpaper blurs and sinks, following the lid as it moves:
 brew install --cask st1vc3/tap/obojeno
 ```
 
-This installs `Obojeno.app` and the `obojeno` command. Open the app once;
-it starts the daemon and lives in the menu bar. Turn on **Open at login** in
-its settings.
+This installs `Obojeno.app` and the `obojeno` command. Open the app once:
+it starts the daemon, lives in the menu bar, and welcomes you with the apps
+it found on your Mac to choose from. Turn on **Open at login** in its
+settings.
 
 ### Nix (flake and Home Manager)
 
@@ -101,8 +102,9 @@ nix develop -c ./scripts/build-app.sh   # or with cargo and Xcode / the Command 
 open target/Obojeno.app
 ```
 
-`target/Obojeno.app/Contents/Helpers/obojeno` is the CLI. Run
-`obojeno service install` to start the daemon at login without the app.
+`target/Obojeno.app/Contents/Helpers/obojeno` is the CLI. Without the app,
+`obojeno setup` turns on the apps it finds and `obojeno service install`
+starts the daemon at login.
 
 ## Use
 
@@ -113,6 +115,7 @@ obojeno next                      # next / previous / random gallery image
 obojeno color '#ff4057'           # theme from a color; --wallpaper to go back
 obojeno preview [image]           # show an image's palette in the terminal
 obojeno import *.jpg              # copy images into the library
+obojeno setup                     # turn on the apps found on this Mac, show what is left
 obojeno targets [name]            # built-in targets and how to set one up
 obojeno service status            # the daemon at login: install / uninstall / status
 ```
@@ -199,7 +202,8 @@ The gallery shows recent wallpapers, your library (images added with **+**
 are copied there) and your folders, in three sizes. Click to set one;
 right-click to show it in Finder or remove it from the library.
 
-**Settings** has open at login, show in Dock, automatic update checks, the
+**Settings** has the apps to theme (with the one-time setup each needs, and
+a Copy button for it), open at login, show in Dock, automatic update checks, the
 scheme, transitions, Spaces, grain, corners, the lid animation, folders and
 shortcuts for next, previous and random wallpapers.
 

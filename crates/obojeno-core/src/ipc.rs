@@ -76,6 +76,8 @@ pub enum Request {
     Step {
         direction: Direction,
     },
+    /// The built-in targets, whether they are on, installed and set up.
+    Targets,
     /// Show the lid animation at `percent` (0 open, 100 shut), for tuning it
     /// with the lid open; `null` follows the sensor again.
     LidPreview {
@@ -97,6 +99,7 @@ pub enum Reply {
     Report(Report),
     State(Box<State>),
     Gallery(Gallery),
+    Targets { targets: Vec<TargetInfo> },
     Error { message: String },
 }
 
@@ -107,6 +110,10 @@ pub struct State {
     /// from before an update. Empty from daemons older than 0.1.2.
     #[serde(default)]
     pub version: String,
+    /// Whether a config file exists; without one the app welcomes the user
+    /// and offers to set up the apps it found.
+    #[serde(default = "yes")]
+    pub configured: bool,
     pub wallpaper: Option<PathBuf>,
     /// A color fixed with `obojeno color`, or `None` when following the
     /// wallpaper.
@@ -124,6 +131,30 @@ pub struct State {
     pub all_spaces: bool,
     pub lid_animation: bool,
     pub finish: Finish,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// A built-in target as the menu bar app shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetInfo {
+    pub name: String,
+    pub title: String,
+    /// On in the config.
+    pub enabled: bool,
+    /// The app was found on this Mac.
+    pub installed: bool,
+    /// Whether the one-time setup is done, when obojeno can tell.
+    pub set_up: Option<bool>,
+    pub setup: String,
+    pub snippet: Option<String>,
+    /// Option values: from the config, or found on this Mac (an Obsidian
+    /// vault, a Zen profile) for options it needs.
+    pub options: std::collections::BTreeMap<String, String>,
+    /// A required option with no value: the target cannot be turned on.
+    pub missing: Option<String>,
 }
 
 /// What happened when theming.

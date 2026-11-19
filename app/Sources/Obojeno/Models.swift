@@ -71,6 +71,8 @@ struct Finish: Codable, Sendable, Equatable {
 struct DaemonState: Codable, Sendable, Equatable {
     /// Missing from daemons older than 0.1.2.
     let version: String?
+    /// False until a config file exists: the first run.
+    let configured: Bool?
     let wallpaper: String?
     let fixedColor: String?
     let mode: Mode
@@ -85,7 +87,7 @@ struct DaemonState: Codable, Sendable, Equatable {
     let finish: Finish
 
     enum CodingKeys: String, CodingKey {
-        case version, wallpaper, mode, palette, transition, duration, scheme, contrast, finish
+        case version, configured, wallpaper, mode, palette, transition, duration, scheme, contrast, finish
         case fixedColor = "fixed_color"
         case wallpaperDirs = "wallpaper_dirs"
         case allSpaces = "all_spaces"
@@ -123,13 +125,36 @@ struct Gallery: Codable, Sendable, Equatable {
     var allItems: [GalleryItem] { recent + folders.flatMap(\.items) }
 }
 
+/// A built-in target (an app obojeno themes), as found on this Mac.
+struct TargetInfo: Codable, Sendable, Equatable, Identifiable {
+    let name: String
+    let title: String
+    let enabled: Bool
+    let installed: Bool
+    /// Whether the one-time setup is done, when obojeno can tell.
+    let setUp: Bool?
+    let setup: String
+    let snippet: String?
+    let options: [String: String]
+    /// A required option without a value; the target cannot be turned on.
+    let missing: String?
+
+    var id: String { name }
+
+    enum CodingKeys: String, CodingKey {
+        case name, title, enabled, installed, setup, snippet, options, missing
+        case setUp = "set_up"
+    }
+}
+
 enum Reply: Decodable, Sendable {
     case report
     case state(DaemonState)
     case gallery(Gallery)
+    case targets([TargetInfo])
     case error(String)
 
-    private enum Keys: String, CodingKey { case reply, message }
+    private enum Keys: String, CodingKey { case reply, message, targets }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -137,6 +162,7 @@ enum Reply: Decodable, Sendable {
         case "report": self = .report
         case "state": self = .state(try DaemonState(from: decoder))
         case "gallery": self = .gallery(try Gallery(from: decoder))
+        case "targets": self = .targets(try c.decode([TargetInfo].self, forKey: .targets))
         case "error": self = .error(try c.decode(String.self, forKey: .message))
         case let other:
             throw DecodingError.dataCorruptedError(
@@ -154,14 +180,20 @@ struct ConfigChange: Encodable, Sendable {
     var lidAnimation: Bool?
     var grain: Double?
     var cornerRadius: Double?
+    var targets: [String: TargetChange]?
 
     enum CodingKeys: String, CodingKey {
-        case scheme, transition, duration, grain
+        case scheme, transition, duration, grain, targets
         case wallpaperDirs = "wallpaper_dirs"
         case allSpaces = "all_spaces"
         case lidAnimation = "lid_animation"
         case cornerRadius = "corner_radius"
     }
+}
+
+struct TargetChange: Encodable, Sendable {
+    var enabled: Bool
+    var options: [String: String] = [:]
 }
 
 enum Direction: String, Encodable, Sendable {
@@ -171,6 +203,7 @@ enum Direction: String, Encodable, Sendable {
 enum Request: Encodable, Sendable {
     case subscribe
     case gallery
+    case targets
     case setWallpaper(path: String, origin: CGPoint?)
     case setMode(Mode)
     case configure(ConfigChange)
@@ -187,6 +220,8 @@ enum Request: Encodable, Sendable {
             try c.encode("subscribe", forKey: .cmd)
         case .gallery:
             try c.encode("gallery", forKey: .cmd)
+        case .targets:
+            try c.encode("targets", forKey: .cmd)
         case .setWallpaper(let path, let origin):
             try c.encode("set_wallpaper", forKey: .cmd)
             try c.encode(path, forKey: .path)

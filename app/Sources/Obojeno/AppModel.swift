@@ -28,6 +28,8 @@ enum Density: String, CaseIterable {
 final class AppModel {
     private(set) var state: DaemonState?
     private(set) var gallery: Gallery?
+    /// The apps obojeno can theme, for the welcome and Apps settings.
+    private(set) var targets: [TargetInfo] = []
     private(set) var connected = false
     /// The last failed action, shown until the next one succeeds.
     var error: String?
@@ -94,6 +96,7 @@ final class AppModel {
         if connected {
             supervisor.connected(to: pid)
             refreshGallery()
+            refreshTargets()
         } else if Snapshot.requested == nil {
             // Installed without a login agent (Homebrew, a download), or the
             // daemon crashed: the app brings its own.
@@ -110,6 +113,8 @@ final class AppModel {
             refreshGallery()
         case .gallery(let gallery):
             self.gallery = gallery
+        case .targets(let targets):
+            self.targets = targets
         case .report, .error:
             break
         }
@@ -121,6 +126,72 @@ final class AppModel {
                 self.gallery = gallery
             }
         }
+    }
+
+    /// Switches and sliders in the wallpaper's own color, light enough to
+    /// read as "on" against the dark glass.
+    var accent: Color { state?.palette.source(tone: 75) ?? .white }
+
+    /// The first run: no config yet.
+    var needsWelcome: Bool { state?.configured == false }
+
+    func refreshTargets() {
+        run { client in
+            if case .targets(let targets) = try await client.send(.targets) {
+                self.targets = targets
+            }
+        }
+    }
+
+    /// Turns an app's theming on or off, with the options found for it and
+    /// any chosen now.
+    func setTarget(_ target: TargetInfo, enabled: Bool, options: [String: String] = [:]) {
+        let all = target.options.merging(options) { _, chosen in chosen }
+        let change = ConfigChange(targets: [target.name: TargetChange(enabled: enabled, options: all)])
+        run { client in
+            _ = try await client.send(.configure(change))
+            if case .targets(let targets) = try await client.send(.targets) {
+                self.targets = targets
+            }
+        }
+    }
+
+    /// Ends the first run: the chosen apps on, the other ones found off.
+    /// Writing the config is what marks the first run as done.
+    func finishWelcome(enabling chosen: Set<String>, options: [String: [String: String]]) {
+        var changes: [String: TargetChange] = [:]
+        for target in targets where target.installed {
+            let all = target.options.merging(options[target.name] ?? [:]) { _, chosen in chosen }
+            guard target.missing.map({ all[$0] != nil }) ?? true else { continue }
+            changes[target.name] = TargetChange(enabled: chosen.contains(target.name), options: all)
+        }
+        var change = ConfigChange(targets: changes)
+        // Something to pick from right away: the wallpapers macOS comes with.
+        if state?.wallpaperDirs.isEmpty ?? true {
+            change.wallpaperDirs = ["/System/Library/Desktop Pictures"]
+        }
+        run { client in
+            _ = try await client.send(.configure(change))
+            if case .targets(let targets) = try await client.send(.targets) {
+                self.targets = targets
+            }
+        }
+    }
+
+    /// Asks for a folder, such as an Obsidian vault, as `~/...` when it is
+    /// in the home folder.
+    func chooseFolder(for target: TargetInfo, option: String, then done: @escaping @MainActor (String) -> Void) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.message = "Choose the \(option) folder for \(target.title)"
+        panel.prompt = "Choose"
+        present(panel) { urls in done(self.abbreviate(urls[0].path)) }
+    }
+
+    func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     func setWallpaper(_ path: String) {
@@ -153,12 +224,12 @@ final class AppModel {
         panel.allowsMultipleSelection = true
         panel.message = "Choose images to add to your obojeno library"
         panel.prompt = "Add to Library"
-        NSApp.activate()
-        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
-        let paths = panel.urls.map(\.path)
-        run { client in
-            if case .gallery(let gallery) = try await client.send(.importImages(paths)) {
-                self.gallery = gallery
+        present(panel) { urls in
+            let paths = urls.map(\.path)
+            self.run { client in
+                if case .gallery(let gallery) = try await client.send(.importImages(paths)) {
+                    self.gallery = gallery
+                }
             }
         }
     }
@@ -181,10 +252,25 @@ final class AppModel {
         panel.canChooseFiles = false
         panel.message = "Choose a folder of wallpapers to show in the gallery"
         panel.prompt = "Add Folder"
+        present(panel) { urls in
+            let dirs = (self.state?.wallpaperDirs ?? []) + urls.map { self.abbreviate($0.path) }
+            self.configure(ConfigChange(wallpaperDirs: dirs))
+        }
+    }
+
+    /// Shows an open panel as a sheet on the menu bar panel, which then
+    /// stays open behind it; as a window of its own when that is closed.
+    private func present(_ panel: NSOpenPanel, then done: @escaping @MainActor ([URL]) -> Void) {
         NSApp.activate()
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let dirs = (state?.wallpaperDirs ?? []) + [abbreviate(url.path)]
-        configure(ConfigChange(wallpaperDirs: dirs))
+        if let window = NSApp.keyWindow {
+            panel.beginSheetModal(for: window) { response in
+                MainActor.assumeIsolated {
+                    if response == .OK, !panel.urls.isEmpty { done(panel.urls) }
+                }
+            }
+        } else if panel.runModal() == .OK, !panel.urls.isEmpty {
+            done(panel.urls)
+        }
     }
 
     func removeFolder(_ dir: String) {

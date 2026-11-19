@@ -53,6 +53,8 @@ pub enum Signal {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Target {
     pub name: String,
+    /// How people know the app: "Neovim" for `nvim`.
+    pub title: &'static str,
     pub outputs: Vec<Output>,
     /// Run after the outputs are written.
     pub reload: Vec<Reload>,
@@ -63,6 +65,8 @@ pub struct Target {
     pub options: Vec<(&'static str, Option<&'static str>)>,
     /// What the user has to do once so the app reads obojeno's output.
     pub setup: &'static str,
+    /// Text to paste for that setup, when there is some.
+    pub snippet: Option<&'static str>,
 }
 
 impl Target {
@@ -70,11 +74,13 @@ impl Target {
     pub fn custom(name: &str) -> Self {
         Self {
             name: name.to_owned(),
+            title: "",
             outputs: vec![],
             reload: vec![],
             only_if_running: None,
             options: vec![],
             setup: "",
+            snippet: None,
         }
     }
 
@@ -122,6 +128,17 @@ fn toml_merge(path: &str, template: &'static str) -> Output {
     }
 }
 
+/// Loads the obojeno colorscheme in Neovim and follows it live.
+pub const NVIM_SNIPPET: &str = r#"local colors = vim.fn.expand("~/.cache/obojeno/nvim")
+vim.opt.rtp:prepend(colors)
+if not pcall(vim.cmd.colorscheme, "obojeno") then
+  vim.cmd.colorscheme("default")
+end
+local watcher = vim.uv.new_fs_event()
+watcher:start(colors .. "/colors", {}, vim.schedule_wrap(function()
+  pcall(vim.cmd.colorscheme, "obojeno")
+end))"#;
+
 pub fn builtin(name: &str) -> Option<Target> {
     let base = Target::custom(name);
     Some(match name {
@@ -135,7 +152,9 @@ pub fn builtin(name: &str) -> Option<Target> {
                 process: "kitty".to_owned(),
                 signal: Signal::Usr1,
             }],
-            setup: "Add `include ~/.cache/obojeno/kitty.conf` at the end of kitty.conf.",
+            title: "kitty",
+            setup: "Add this line at the end of kitty.conf.",
+            snippet: Some("include ~/.cache/obojeno/kitty.conf"),
             ..base
         },
         "borders" => Target {
@@ -148,6 +167,7 @@ pub fn builtin(name: &str) -> Option<Target> {
                 "active_color=0xff{{source_color.hex_stripped}}",
             ])],
             only_if_running: Some("borders".to_owned()),
+            title: "JankyBorders",
             setup: "Nothing to do: obojeno updates the running borders instance.",
             ..base
         },
@@ -195,6 +215,7 @@ pub fn builtin(name: &str) -> Option<Target> {
                 ("base", Some("~/.simplebarrc")),
                 ("blur", Some("{{cache}}/wallpaper-blur.jpg")),
             ],
+            title: "simple-bar",
             setup: "Nothing to do: colors are merged into ~/.simplebarrc (or into `base`, written to ~/.simplebarrc). \
                     Custom styles can show a blurred wallpaper behind the bar from `blur`.",
             ..base
@@ -204,7 +225,9 @@ pub fn builtin(name: &str) -> Option<Target> {
                 "{{cache}}/nvim/colors/obojeno.lua",
                 include_str!("../templates/nvim.lua"),
             )],
-            setup: "See `obojeno targets nvim` for the snippet that loads and live-reloads the colorscheme.",
+            title: "Neovim",
+            setup: "Add this to init.lua: it loads the colorscheme and follows it live.",
+            snippet: Some(NVIM_SNIPPET),
             ..base
         },
         "starship" => Target {
@@ -213,7 +236,9 @@ pub fn builtin(name: &str) -> Option<Target> {
                 include_str!("../templates/starship.toml"),
             )],
             options: vec![("base", Some("~/.config/starship.toml"))],
-            setup: "Set STARSHIP_CONFIG=~/.cache/obojeno/starship.toml and use palette colors (`fg:primary`) in your config.",
+            title: "starship",
+            setup: "Point starship at obojeno's config in your shell profile, and use palette colors (`fg:primary`) in yours.",
+            snippet: Some("export STARSHIP_CONFIG=~/.cache/obojeno/starship.toml"),
             ..base
         },
         "herdr" => Target {
@@ -224,7 +249,9 @@ pub fn builtin(name: &str) -> Option<Target> {
             reload: vec![cmd(&["herdr", "server", "reload-config"])],
             only_if_running: Some("herdr".to_owned()),
             options: vec![("base", Some("~/.config/herdr/config.toml"))],
-            setup: "Set HERDR_CONFIG_PATH=~/.cache/obojeno/herdr.toml for herdr.",
+            title: "herdr",
+            setup: "Point herdr at obojeno's config in your shell profile.",
+            snippet: Some("export HERDR_CONFIG_PATH=~/.cache/obojeno/herdr.toml"),
             ..base
         },
         "obsidian" => Target {
@@ -233,6 +260,7 @@ pub fn builtin(name: &str) -> Option<Target> {
                 include_str!("../templates/obsidian.css"),
             )],
             options: vec![("vault", None)],
+            title: "Obsidian",
             setup: "Enable the `obojeno` snippet under Settings > Appearance > CSS snippets.",
             ..base
         },
@@ -242,7 +270,11 @@ pub fn builtin(name: &str) -> Option<Target> {
                 include_str!("../templates/zen.css"),
             )],
             options: vec![("profile", None)],
-            setup: "Set toolkit.legacyUserProfileCustomizations.stylesheets = true in about:config. Zen applies changes on its next start.",
+            title: "Zen",
+            setup: "Turn on this setting in about:config (or add it to user.js). Zen applies changes on its next start.",
+            snippet: Some(
+                r#"user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);"#,
+            ),
             ..base
         },
         _ => return None,
@@ -258,6 +290,8 @@ mod tests {
         for name in BUILTIN_NAMES {
             let t = builtin(name).unwrap_or_else(|| panic!("{name}"));
             assert_eq!(t.name, name);
+            assert!(!t.title.is_empty(), "{name} has no title");
+            assert!(!t.setup.is_empty(), "{name} has no setup");
             assert!(
                 !t.outputs.is_empty() || !t.reload.is_empty(),
                 "{name} does nothing"

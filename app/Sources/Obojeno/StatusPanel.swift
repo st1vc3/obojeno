@@ -15,6 +15,7 @@ final class StatusPanel: NSObject {
     private let host: NSHostingController<AnyView>
     private var sizeObservation: NSKeyValueObservation?
     private var closedAt = Date.distantPast
+    private var welcomed = false
 
     static let cornerRadius: CGFloat = 26
 
@@ -29,7 +30,12 @@ final class StatusPanel: NSObject {
         glass.cornerRadius = Self.cornerRadius
         glass.contentView = host.view
         panel.contentView = glass
-        panel.onClose = { [weak self] in self?.closedAt = Date() }
+        panel.onClose = { [weak self] in
+            self?.closedAt = Date()
+            // Back to the app that was in front, unless obojeno has other
+            // windows up (its Dock icon, an open panel).
+            if NSApp.windows.allSatisfy({ !$0.isVisible || $0.level == .statusBar }) { NSApp.hide(nil) }
+        }
         sizeObservation = host.observe(\.preferredContentSize) { [weak self] _, _ in
             MainActor.assumeIsolated { self?.fitToContent() }
         }
@@ -39,6 +45,7 @@ final class StatusPanel: NSObject {
             button.setAccessibilityLabel("obojeno")
         }
         updateIcon()
+        welcomeOnFirstRun()
         // A developer aid: open right away (OBOJENO_OPEN=1, or =settings on
         // the settings), to look at it without a click.
         if ProcessInfo.processInfo.environment["OBOJENO_OPEN"] != nil {
@@ -55,6 +62,19 @@ final class StatusPanel: NSObject {
         }
     }
 
+    /// Opens the panel by itself once on the first run, so the welcome is
+    /// seen without finding the menu bar item first.
+    private func welcomeOnFirstRun() {
+        let needsWelcome = withObservationTracking {
+            model.needsWelcome
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.welcomeOnFirstRun() }
+        }
+        guard needsWelcome, !welcomed else { return }
+        welcomed = true
+        open()
+    }
+
     @objc private func toggle() {
         if panel.isVisible {
             panel.close()
@@ -68,6 +88,9 @@ final class StatusPanel: NSObject {
     private func open() {
         fitToContent()
         panel.alphaValue = 0
+        // Active, so controls draw in color rather than the gray of an app
+        // in the background.
+        NSApp.activate()
         panel.makeKeyAndOrderFront(nil)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.15

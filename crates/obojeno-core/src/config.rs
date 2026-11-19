@@ -276,6 +276,15 @@ pub struct ConfigChange {
     pub lid_animation: Option<bool>,
     pub grain: Option<f64>,
     pub corner_radius: Option<f64>,
+    /// Turns targets on or off, setting their options.
+    pub targets: Option<BTreeMap<String, TargetChange>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TargetChange {
+    pub enabled: bool,
+    pub options: BTreeMap<String, String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -354,6 +363,34 @@ pub fn edit(text: &str, change: &ConfigChange) -> Result<String, EditError> {
                 )));
             }
             set(&mut doc["transition"]["duration"], duration.into());
+        }
+    }
+    if let Some(targets) = &change.targets {
+        if !doc.contains_table("targets") {
+            let mut table = Table::new();
+            // Only the [targets.<name>] headers show.
+            table.set_implicit(true);
+            doc["targets"] = Item::Table(table);
+        }
+        for (name, target) in targets {
+            if !doc["targets"]
+                .as_table()
+                .is_some_and(|t| t.contains_table(name))
+            {
+                doc["targets"][name.as_str()] = Item::Table(Table::new());
+            }
+            let table = doc["targets"][name.as_str()]
+                .as_table_mut()
+                .ok_or_else(|| EditError::Invalid(format!("targets.{name} is not a table")))?;
+            if target.enabled {
+                // A table is on unless it says otherwise.
+                table.remove("enabled");
+            } else {
+                set(&mut table["enabled"], false.into());
+            }
+            for (key, value) in &target.options {
+                set(&mut table[key.as_str()], value.as_str().into());
+            }
         }
     }
     let edited = doc.to_string();
@@ -457,6 +494,49 @@ mod tests {
         .unwrap();
         assert!((Config::parse(&edited).unwrap().transition.duration - 0.3).abs() < f64::EPSILON);
         assert_eq!(edit("", &ConfigChange::default()).unwrap(), "");
+    }
+
+    fn toggle(name: &str, enabled: bool, options: &[(&str, &str)]) -> ConfigChange {
+        ConfigChange {
+            targets: Some(BTreeMap::from([(
+                name.to_owned(),
+                TargetChange {
+                    enabled,
+                    options: options
+                        .iter()
+                        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                        .collect(),
+                },
+            )])),
+            ..ConfigChange::default()
+        }
+    }
+
+    #[test]
+    fn edits_turn_targets_on_and_off() {
+        let text = "# mine\nscheme = \"content\"\n";
+        let on = edit(text, &toggle("kitty", true, &[])).unwrap();
+        assert_eq!(on, "# mine\nscheme = \"content\"\n\n[targets.kitty]\n");
+        assert!(Config::parse(&on).unwrap().targets.contains_key("kitty"));
+
+        let off = edit(&on, &toggle("kitty", false, &[])).unwrap();
+        assert_eq!(
+            Config::parse(&off).unwrap().targets["kitty"].enabled,
+            Some(false)
+        );
+        let again = edit(&off, &toggle("kitty", true, &[])).unwrap();
+        assert_eq!(again, on, "on again leaves no `enabled` behind");
+    }
+
+    #[test]
+    fn edits_set_target_options_and_keep_the_rest() {
+        let text =
+            "[targets.obsidian]\n# my vault\nvault = \"~/Old\"\nonly_if_running = \"Obsidian\"\n";
+        let edited = edit(text, &toggle("obsidian", true, &[("vault", "~/Notes")])).unwrap();
+        assert_eq!(
+            edited,
+            "[targets.obsidian]\n# my vault\nvault = \"~/Notes\"\nonly_if_running = \"Obsidian\"\n"
+        );
     }
 
     #[test]

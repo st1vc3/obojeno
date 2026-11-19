@@ -36,6 +36,8 @@ struct SettingsView: View {
             }
             Caption(versionText(daemon: state.version))
 
+            AppsSection()
+
             SectionTitle("Theme")
             SettingsGroup {
                 Row("Scheme") {

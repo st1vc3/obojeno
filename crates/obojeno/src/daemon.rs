@@ -23,7 +23,7 @@ use obojeno_core::{Mode, Palette};
 use crate::apply::{self, Applied};
 use crate::paths::Paths;
 use crate::state::{Source, State};
-use crate::{actions, desktop, gallery, macos, watch};
+use crate::{actions, desktop, gallery, macos, setup, watch};
 
 /// Work for the main thread.
 pub enum Job {
@@ -202,6 +202,10 @@ fn handle(request: Request) -> Reply {
                 .and_then(|_| gallery_now())
                 .map_or_else(error, Reply::Gallery);
         }
+        Request::Targets => {
+            return setup::targets(&daemon().paths)
+                .map_or_else(error, |targets| Reply::Targets { targets });
+        }
         Request::LidPreview { percent } => {
             return match MainThreadMarker::new() {
                 Some(mtm) => {
@@ -325,6 +329,7 @@ fn state_from(
     };
     Ok(ipc::State {
         version: env!("CARGO_PKG_VERSION").to_owned(),
+        configured: daemon().paths.config_file.exists(),
         wallpaper,
         fixed_color,
         mode,

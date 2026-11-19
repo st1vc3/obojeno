@@ -25,3 +25,12 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v16
       - run: nix flake check
       - run: nix build
+
+  app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: ./scripts/build-app.sh
+      - run: codesign --verify --strict target/Obojeno.app

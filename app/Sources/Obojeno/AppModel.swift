@@ -1,6 +1,28 @@
 import AppKit
 import Observation
+import ServiceManagement
 import SwiftUI
+
+/// How large gallery tiles are; the toolbar switches between them.
+enum Density: String, CaseIterable {
+    case small, medium, large
+
+    var columns: Int {
+        switch self {
+        case .small: 4
+        case .medium: 3
+        case .large: 2
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .small: "square.grid.3x3.fill"
+        case .medium: "square.grid.2x2.fill"
+        case .large: "rectangle.grid.1x2.fill"
+        }
+    }
+}
 
 @MainActor @Observable
 final class AppModel {
@@ -12,16 +34,38 @@ final class AppModel {
     /// A wallpaper the user picked, shown as current until the daemon confirms.
     private(set) var choosing: String?
 
+    var density: Density = Density(rawValue: UserDefaults.standard.string(forKey: "density") ?? "") ?? .medium {
+        didSet { UserDefaults.standard.set(density.rawValue, forKey: "density") }
+    }
+
+    var showInDock: Bool = UserDefaults.standard.bool(forKey: "showInDock") {
+        didSet {
+            UserDefaults.standard.set(showInDock, forKey: "showInDock")
+            applyDockPolicy()
+        }
+    }
+
+    /// Mirrors the login item; read back after every change since macOS can
+    /// refuse or need approval in System Settings.
+    private(set) var openAtLogin = SMAppService.mainApp.status == .enabled
+
+    let shortcuts = Shortcuts()
+
     private let client = DaemonClient()
     private var subscription: Task<Void, Never>?
 
     init() {
+        applyDockPolicy()
+        shortcuts.onTrigger = { [weak self] direction in self?.step(direction) }
+        shortcuts.registerAll()
         subscription = Task { [weak self, client] in
-            let updates = client.subscribe { connected in
-                Task { @MainActor in self?.connectionChanged(connected) }
-            }
-            for await reply in updates {
-                self?.receive(reply)
+            // One ordered stream, so a late "disconnected" can never
+            // overwrite a newer "connected".
+            for await update in client.subscribe() {
+                switch update {
+                case .connected(let connected): self?.connectionChanged(connected)
+                case .reply(let reply): self?.receive(reply)
+                }
             }
         }
     }
@@ -45,7 +89,7 @@ final class AppModel {
     private func receive(_ reply: Reply) {
         switch reply {
         case .state(let state):
-            withAnimation(.easeInOut(duration: 0.3)) { self.state = state }
+            withAnimation(.easeInOut(duration: 0.4)) { self.state = state }
             // Current markers and swatches follow the theme.
             refreshGallery()
         case .gallery(let gallery):
@@ -65,38 +109,61 @@ final class AppModel {
 
     func setWallpaper(_ path: String) {
         choosing = path
+        // The circle transition grows from where the click happened.
+        let origin = NSEvent.mouseLocation
         run { client in
             defer { self.choosing = nil }
-            _ = try await client.send(.setWallpaper(path: path))
+            _ = try await client.send(.setWallpaper(path: path, origin: origin))
         }
     }
 
-    func setMode(_ mode: Mode) {
-        guard mode != state?.mode else { return }
-        run { client in _ = try await client.send(.setMode(mode)) }
+    func step(_ direction: Direction) {
+        run { client in _ = try await client.send(.step(direction)) }
+    }
+
+    func toggleMode() {
+        let next: Mode = mode == .dark ? .light : .dark
+        run { client in _ = try await client.send(.setMode(next)) }
     }
 
     func configure(_ change: ConfigChange) {
         run { client in _ = try await client.send(.configure(change)) }
     }
 
-    func chooseImage() {
+    /// Copies images into the library.
+    func importImages() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose a wallpaper"
-        panel.prompt = "Set Wallpaper"
+        panel.allowsMultipleSelection = true
+        panel.message = "Choose images to add to your obojeno library"
+        panel.prompt = "Add to Library"
         NSApp.activate()
-        if panel.runModal() == .OK, let url = panel.url {
-            setWallpaper(url.path)
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        let paths = panel.urls.map(\.path)
+        run { client in
+            if case .gallery(let gallery) = try await client.send(.importImages(paths)) {
+                self.gallery = gallery
+            }
         }
+    }
+
+    func removeFromLibrary(_ item: GalleryItem) {
+        run { client in
+            if case .gallery(let gallery) = try await client.send(.remove(item.path)) {
+                self.gallery = gallery
+            }
+        }
+    }
+
+    func showInFinder(_ item: GalleryItem) {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
     }
 
     func addFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        panel.message = "Choose a folder of wallpapers"
+        panel.message = "Choose a folder of wallpapers to show in the gallery"
         panel.prompt = "Add Folder"
         NSApp.activate()
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -106,6 +173,24 @@ final class AppModel {
 
     func removeFolder(_ dir: String) {
         configure(ConfigChange(wallpaperDirs: (state?.wallpaperDirs ?? []).filter { $0 != dir }))
+    }
+
+    func setOpenAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            error = nil
+        } catch {
+            self.error = "Open at login: \(error.localizedDescription)"
+        }
+        openAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    private func applyDockPolicy() {
+        NSApp?.setActivationPolicy(showInDock ? .regular : .accessory)
     }
 
     /// Starts the daemon; for when it is not set up to run at login.

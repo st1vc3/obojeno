@@ -20,7 +20,7 @@ use objc2_core_graphics::{
 };
 use objc2_foundation::{NSArray, NSNumber, ns_string};
 use objc2_quartz_core::{CALayer, CAShapeLayer, CATransaction, CATransform3D};
-use obojeno_core::config::{Finish, Grain};
+use obojeno_core::config::Finish;
 
 use crate::{imageio, transition};
 
@@ -127,7 +127,7 @@ fn rebuild(finish: Finish, lid_animation: bool, mtm: MainThreadMarker) {
             lid.window.close();
         }
         let screens = NSScreen::screens(mtm);
-        if finish.grain != Grain::Off || finish.corner_radius > 0.0 {
+        if finish.grain > 0.0 || finish.corner_radius > 0.0 {
             let noise = noise_color();
             overlays.finish = screens
                 .iter()
@@ -157,15 +157,14 @@ fn finish_window(
     if let Some(root) = root_layer(&window) {
         CATransaction::begin();
         CATransaction::setDisableActions(true);
-        if let (Some(noise), true) = (noise, finish.grain != Grain::Off) {
+        if let (Some(noise), true) = (noise, finish.grain > 0.0) {
             let grain = CALayer::new();
             grain.setFrame(bounds);
             grain.setBackgroundColor(Some(&noise.CGColor()));
-            grain.setOpacity(match finish.grain {
-                Grain::Subtle => 0.05,
-                Grain::Strong => 0.11,
-                Grain::Off => 0.0,
-            });
+            // Full strength is a quarter-opaque noise layer; more turns the
+            // wallpaper to static.
+            #[allow(clippy::cast_possible_truncation)] // An opacity.
+            grain.setOpacity((finish.grain.clamp(0.0, 1.0) * 0.25) as f32);
             root.addSublayer(&grain);
         }
         if finish.corner_radius > 0.0 {
@@ -333,8 +332,10 @@ fn gaussian_blur() -> Option<Retained<AnyObject>> {
 /// How far the lid effect has progressed: 0 open (at or beyond this
 /// angle), 1 nearly shut.
 fn progress(angle: u16) -> CGFloat {
-    const START: CGFloat = 95.0;
-    const END: CGFloat = 25.0;
+    // Laptops are used anywhere from about 70° up, so the effect only
+    // starts well below that, once the lid is really closing.
+    const START: CGFloat = 55.0;
+    const END: CGFloat = 15.0;
     ((START - CGFloat::from(angle)) / (START - END)).clamp(0.0, 1.0)
 }
 
@@ -463,11 +464,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lid_progress_ramps_from_95_to_25_degrees() {
-        assert!((progress(120) - 0.0).abs() < f64::EPSILON);
-        assert!((progress(95) - 0.0).abs() < f64::EPSILON);
-        assert!((progress(60) - 0.5).abs() < f64::EPSILON);
-        assert!((progress(25) - 1.0).abs() < f64::EPSILON);
+    fn lid_progress_ramps_from_55_to_15_degrees() {
+        for open in [120, 100, 80, 70, 55] {
+            assert!(
+                progress(open).abs() < f64::EPSILON,
+                "{open}° is a working angle"
+            );
+        }
+        assert!((progress(35) - 0.5).abs() < f64::EPSILON);
+        assert!((progress(15) - 1.0).abs() < f64::EPSILON);
         assert!((progress(0) - 1.0).abs() < f64::EPSILON);
     }
 }

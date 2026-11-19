@@ -44,9 +44,27 @@ struct Palette: Codable, Sendable, Equatable {
     let variant: SchemeVariant
     let light: [String: String]
     let dark: [String: String]
+    /// Tonal palettes, 101 colors each, indexed by tone (0 black, 100 white).
+    let palettes: [String: [String]]
 
     func color(_ role: String, _ mode: Mode) -> Color {
         Color(hex: (mode == .dark ? dark : light)[role] ?? source)
+    }
+
+    /// The wallpaper's own color at a tone, at full saturation.
+    func source(tone: Int) -> Color {
+        Color(hex: palettes["source"].flatMap { $0.indices.contains(tone) ? $0[tone] : nil } ?? source)
+    }
+}
+
+struct Finish: Codable, Sendable, Equatable {
+    /// 0 (off) to 1.
+    let grain: Double
+    let cornerRadius: Double
+
+    enum CodingKeys: String, CodingKey {
+        case grain
+        case cornerRadius = "corner_radius"
     }
 }
 
@@ -60,11 +78,16 @@ struct DaemonState: Codable, Sendable, Equatable {
     let scheme: SchemeVariant
     let contrast: Double
     let wallpaperDirs: [String]
+    let allSpaces: Bool
+    let lidAnimation: Bool
+    let finish: Finish
 
     enum CodingKeys: String, CodingKey {
-        case wallpaper, mode, palette, transition, duration, scheme, contrast
+        case wallpaper, mode, palette, transition, duration, scheme, contrast, finish
         case fixedColor = "fixed_color"
         case wallpaperDirs = "wallpaper_dirs"
+        case allSpaces = "all_spaces"
+        case lidAnimation = "lid_animation"
     }
 }
 
@@ -81,11 +104,13 @@ struct GalleryItem: Codable, Sendable, Equatable, Identifiable {
 
 struct GalleryFolder: Codable, Sendable, Equatable, Identifiable {
     let path: String
+    /// obojeno's own library, where imported images go.
+    let library: Bool
     let items: [GalleryItem]
     let error: String?
 
     var id: String { path }
-    var name: String { URL(fileURLWithPath: path).lastPathComponent }
+    var name: String { library ? "Library" : URL(fileURLWithPath: path).lastPathComponent }
 }
 
 struct Gallery: Codable, Sendable, Equatable {
@@ -123,21 +148,35 @@ struct ConfigChange: Encodable, Sendable {
     var transition: TransitionStyle?
     var duration: Double?
     var wallpaperDirs: [String]?
+    var allSpaces: Bool?
+    var lidAnimation: Bool?
+    var grain: Double?
+    var cornerRadius: Double?
 
     enum CodingKeys: String, CodingKey {
-        case scheme, transition, duration
+        case scheme, transition, duration, grain
         case wallpaperDirs = "wallpaper_dirs"
+        case allSpaces = "all_spaces"
+        case lidAnimation = "lid_animation"
+        case cornerRadius = "corner_radius"
     }
+}
+
+enum Direction: String, Encodable, Sendable {
+    case next, previous, random
 }
 
 enum Request: Encodable, Sendable {
     case subscribe
     case gallery
-    case setWallpaper(path: String)
+    case setWallpaper(path: String, origin: CGPoint?)
     case setMode(Mode)
     case configure(ConfigChange)
+    case importImages([String])
+    case remove(String)
+    case step(Direction)
 
-    private enum Keys: String, CodingKey { case cmd, path, mode, change }
+    private enum Keys: String, CodingKey { case cmd, path, paths, mode, change, origin, direction }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
@@ -146,15 +185,25 @@ enum Request: Encodable, Sendable {
             try c.encode("subscribe", forKey: .cmd)
         case .gallery:
             try c.encode("gallery", forKey: .cmd)
-        case .setWallpaper(let path):
+        case .setWallpaper(let path, let origin):
             try c.encode("set_wallpaper", forKey: .cmd)
             try c.encode(path, forKey: .path)
+            if let origin { try c.encode([origin.x, origin.y], forKey: .origin) }
         case .setMode(let mode):
             try c.encode("set_mode", forKey: .cmd)
             try c.encode(mode, forKey: .mode)
         case .configure(let change):
             try c.encode("configure", forKey: .cmd)
             try c.encode(change, forKey: .change)
+        case .importImages(let paths):
+            try c.encode("import", forKey: .cmd)
+            try c.encode(paths, forKey: .paths)
+        case .remove(let path):
+            try c.encode("remove", forKey: .cmd)
+            try c.encode(path, forKey: .path)
+        case .step(let direction):
+            try c.encode("step", forKey: .cmd)
+            try c.encode(direction, forKey: .direction)
         }
     }
 }

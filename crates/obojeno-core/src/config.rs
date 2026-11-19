@@ -33,7 +33,9 @@ pub struct Config {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Finish {
-    pub grain: Grain,
+    /// Film grain over the wallpaper, 0 (off) ..= 1 (strongest); softens
+    /// banding in smooth gradients.
+    pub grain: f64,
     /// Rounds the wallpaper's corners by this many points: the bottom ones
     /// on a MacBook's built-in screen (to match its rounded top), all four
     /// elsewhere. 0 turns it off.
@@ -43,20 +45,10 @@ pub struct Finish {
 impl Default for Finish {
     fn default() -> Self {
         Self {
-            grain: Grain::Off,
+            grain: 0.0,
             corner_radius: 0.0,
         }
     }
-}
-
-/// Film grain over the wallpaper; softens banding in smooth gradients.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Grain {
-    #[default]
-    Off,
-    Subtle,
-    Strong,
 }
 
 impl Default for Config {
@@ -282,7 +274,7 @@ pub struct ConfigChange {
     pub wallpaper_dirs: Option<Vec<String>>,
     pub all_spaces: Option<bool>,
     pub lid_animation: Option<bool>,
-    pub grain: Option<Grain>,
+    pub grain: Option<f64>,
     pub corner_radius: Option<f64>,
 }
 
@@ -328,12 +320,12 @@ pub fn edit(text: &str, change: &ConfigChange) -> Result<String, EditError> {
             doc["finish"] = Item::Table(Table::new());
         }
         if let Some(grain) = change.grain {
-            let name = match grain {
-                Grain::Off => "off",
-                Grain::Subtle => "subtle",
-                Grain::Strong => "strong",
-            };
-            set(&mut doc["finish"]["grain"], name.into());
+            if !(0.0..=1.0).contains(&grain) {
+                return Err(EditError::Invalid(format!(
+                    "grain {grain} is outside 0..=1"
+                )));
+            }
+            set(&mut doc["finish"]["grain"], grain.into());
         }
         if let Some(radius) = change.corner_radius {
             if !(0.0..=40.0).contains(&radius) {
@@ -421,7 +413,7 @@ mod tests {
             &ConfigChange {
                 all_spaces: Some(true),
                 lid_animation: Some(true),
-                grain: Some(Grain::Subtle),
+                grain: Some(0.3),
                 corner_radius: Some(18.0),
                 ..ConfigChange::default()
             },
@@ -429,7 +421,17 @@ mod tests {
         .unwrap();
         let config = Config::parse(&edited).unwrap();
         assert!(config.all_spaces && config.lid_animation);
-        assert_eq!(config.finish.grain, Grain::Subtle);
+        assert!((config.finish.grain - 0.3).abs() < f64::EPSILON);
+        assert!(
+            edit(
+                "",
+                &ConfigChange {
+                    grain: Some(1.5),
+                    ..ConfigChange::default()
+                }
+            )
+            .is_err()
+        );
         assert!((config.finish.corner_radius - 18.0).abs() < f64::EPSILON);
         assert!(
             edit(

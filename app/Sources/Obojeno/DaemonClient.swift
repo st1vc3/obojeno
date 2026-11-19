@@ -40,24 +40,36 @@ struct DaemonClient: Sendable {
         }.value
     }
 
-    /// Delivers every state and gallery update until the task is cancelled,
-    /// reconnecting while the daemon is down.
-    func subscribe(onConnection: @escaping @Sendable (Bool) -> Void) -> AsyncStream<Reply> {
+    /// What a subscription delivers, in order.
+    enum Update: Sendable {
+        case connected(Bool)
+        case reply(Reply)
+    }
+
+    /// Delivers connection changes and every state and gallery update, in
+    /// order, until the task is cancelled; reconnects while the daemon is
+    /// down.
+    func subscribe() -> AsyncStream<Update> {
         let socketPath = socketPath
         return AsyncStream { continuation in
             let control = SubscriptionControl()
             let thread = Thread {
+                var connected = false
                 while !control.isCancelled {
                     if let connection = try? Connection(path: socketPath),
                         control.attach(connection),
                         (try? connection.write(Request.subscribe)) != nil
                     {
-                        onConnection(true)
+                        connected = true
+                        continuation.yield(.connected(true))
                         while let reply = try? connection.readReply() {
-                            continuation.yield(reply)
+                            continuation.yield(.reply(reply))
                         }
                     }
-                    onConnection(false)
+                    if connected {
+                        connected = false
+                        continuation.yield(.connected(false))
+                    }
                     if !control.isCancelled { Thread.sleep(forTimeInterval: 1) }
                 }
                 continuation.finish()

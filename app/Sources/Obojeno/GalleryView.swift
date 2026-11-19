@@ -4,32 +4,20 @@ import SwiftUI
 struct GalleryView: View {
     @Environment(AppModel.self) private var model
 
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
-
     var body: some View {
-        // Sized to the content, scrolling only once it gets taller.
-        ViewThatFits(in: .vertical) {
-            content
-            ScrollView { content }
-        }
-        .frame(maxHeight: 420)
-    }
-
-    private var content: some View {
-        VStack(alignment: .leading, spacing: 14) {
-                if let gallery = model.gallery {
+        ScrollView {
+            if let gallery = model.gallery {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     if !gallery.recent.isEmpty {
                         Section(title: "Recent") {
-                            // Scrolls edge to edge, past the popover's margins.
                             ScrollView(.horizontal, showsIndicators: false) {
-                                LazyHStack(spacing: 8) {
-                                    ForEach(gallery.recent) { item in
-                                        Tile(item: item).frame(width: 104)
-                                    }
+                                LazyHStack(spacing: 10) {
+                                    ForEach(gallery.recent) { Tile(item: $0, compact: true).frame(width: 128) }
                                 }
-                                .padding(.vertical, 2)
+                                .padding(.vertical, 4)
                                 .padding(.horizontal, 14)
                             }
+                            // Edge to edge, past the popover's margins.
                             .padding(.horizontal, -14)
                         }
                     }
@@ -37,23 +25,34 @@ struct GalleryView: View {
                         Section(title: folder.name, help: folder.path) {
                             if let error = folder.error {
                                 Label("This folder \(error).", systemImage: "folder.badge.questionmark")
-                                    .font(.caption)
+                                    .font(.callout)
                                     .foregroundStyle(.secondary)
                             } else if folder.items.isEmpty {
-                                Text("No images").font(.caption).foregroundStyle(.secondary)
+                                EmptyLibrary(library: folder.library)
                             } else {
-                                LazyVGrid(columns: columns, spacing: 8) {
-                                    ForEach(folder.items) { Tile(item: $0) }
+                                LazyVGrid(
+                                    columns: Array(
+                                        repeating: GridItem(.flexible(), spacing: 10), count: model.density.columns),
+                                    spacing: 10
+                                ) {
+                                    ForEach(folder.items) { Tile(item: $0, library: folder.library) }
                                 }
-                                .padding(2)
+                                .padding(.vertical, 4)
                             }
                         }
                     }
-                } else {
-                    ProgressView().frame(maxWidth: .infinity, minHeight: 120)
                 }
+                .padding(.bottom, 6)
+                // Scrolls (and clips) at the popover's edges, not its margins,
+                // so rows and hover lifts are not cut off early.
+                .padding(.horizontal, 14)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, minHeight: 200)
+            }
         }
-        .padding(.bottom, 2)
+        .scrollIndicators(.never)
+        .frame(height: PopoverSize.contentHeight)
+        .padding(.horizontal, -14)
     }
 }
 
@@ -63,52 +62,96 @@ private struct Section<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.75))
                 .help(help ?? title)
             content
         }
     }
 }
 
-/// One wallpaper: thumbnail, its theme's swatches, a ring when current.
+private struct EmptyLibrary: View {
+    @Environment(AppModel.self) private var model
+    let library: Bool
+
+    var body: some View {
+        if library {
+            Button(action: model.importImages) {
+                VStack(spacing: 6) {
+                    Image(systemName: "photo.badge.plus").font(.system(size: 22))
+                    Text("Add images to your library").font(.callout.weight(.medium))
+                    Text("They are copied, so they stay even if the originals move.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 120)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(.white.opacity(0.25), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else {
+            Text("No images").font(.callout).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// One wallpaper: the image with its name over a soft shade, ringed when
+/// it is the one on screen.
 private struct Tile: View {
     @Environment(AppModel.self) private var model
     let item: GalleryItem
+    var library = false
+    var compact = false
     @ViewState private var hovering = false
 
     var body: some View {
         let current = model.choosing.map { $0 == item.path } ?? item.current
+        let showName = !compact && model.density != .small
         Button {
             model.setWallpaper(item.path)
         } label: {
-            VStack(spacing: 0) {
-                Thumbnail(path: item.thumbnail, fallback: Color.secondary.opacity(0.15))
-                    .aspectRatio(16 / 10, contentMode: .fit)
-                HStack(spacing: 0) {
-                    if item.swatches.isEmpty {
-                        Color.secondary.opacity(0.2)
-                    } else {
-                        ForEach(Array(item.swatches.enumerated()), id: \.offset) { Color(hex: $0.element) }
+            Thumbnail(path: item.thumbnail, fallback: .white.opacity(0.12))
+                .aspectRatio(16 / 10, contentMode: .fit)
+                .overlay(alignment: .bottomLeading) {
+                    if showName {
+                        Text(item.name)
+                            .font(.system(size: model.density == .large ? 13 : 11, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 7)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                LinearGradient(colors: [.clear, .black.opacity(0.45)], startPoint: .top, endPoint: .bottom))
                     }
                 }
-                .frame(height: 5)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(current ? model.color("primary") : .primary.opacity(hovering ? 0.35 : 0.1),
-                                  lineWidth: current ? 2.5 : 1))
-            .scaleEffect(hovering ? 1.03 : 1)
-            .animation(.snappy(duration: 0.15), value: hovering)
-            .contentShape(Rectangle())
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(.white.opacity(current ? 0.95 : hovering ? 0.4 : 0.12), lineWidth: current ? 2.5 : 1)
+                )
+                .shadow(color: .black.opacity(hovering ? 0.35 : 0.22), radius: hovering ? 9 : 5, y: hovering ? 5 : 3)
+                .scaleEffect(hovering ? 1.035 : 1)
+                .animation(.snappy(duration: 0.18), value: hovering)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(item.name)
         .accessibilityLabel(item.name)
+        .contextMenu {
+            Button("Set as Wallpaper") { model.setWallpaper(item.path) }
+            Button("Show in Finder") { model.showInFinder(item) }
+            if library {
+                Divider()
+                Button("Move to Trash", role: .destructive) { model.removeFromLibrary(item) }
+            }
+        }
     }
 }
 
@@ -133,18 +176,18 @@ struct Thumbnail: View {
             }
             .clipped()
             .task(id: path) {
-            guard let path else {
-                image = nil
-                return
+                guard let path else {
+                    image = nil
+                    return
+                }
+                if let cached = ThumbnailCache.shared.object(forKey: path as NSString) {
+                    image = cached
+                    return
+                }
+                let loaded = await Task.detached(priority: .userInitiated) { NSImage(contentsOfFile: path) }.value
+                if let loaded { ThumbnailCache.shared.setObject(loaded, forKey: path as NSString) }
+                withAnimation(.easeOut(duration: 0.2)) { image = loaded }
             }
-            if let cached = ThumbnailCache.shared.object(forKey: path as NSString) {
-                image = cached
-                return
-            }
-            let loaded = await Task.detached(priority: .userInitiated) { NSImage(contentsOfFile: path) }.value
-            if let loaded { ThumbnailCache.shared.setObject(loaded, forKey: path as NSString) }
-            withAnimation(.easeOut(duration: 0.2)) { image = loaded }
-        }
     }
 }
 

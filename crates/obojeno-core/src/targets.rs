@@ -158,7 +158,7 @@ pub fn builtin(name: &str) -> Option<Target> {
                     kind: OutputKind::Merge {
                         format: MergeFormat::Json,
                         template: Cow::Borrowed(include_str!("../templates/simple-bar.json")),
-                        base: None,
+                        base: Some("{{base}}".to_owned()),
                     },
                 },
                 Output {
@@ -177,7 +177,11 @@ pub fn builtin(name: &str) -> Option<Target> {
                 "tell application id \"tracesOf.Uebersicht\" to refresh widget id \"simple-bar-index-jsx\"",
             ])],
             only_if_running: Some("Übersicht".to_owned()),
-            setup: "Nothing to do: colors are merged into ~/.simplebarrc.",
+            // By default the colors merge into the file itself. Point `base`
+            // at a tracked copy to keep your settings there instead.
+            options: vec![("base", Some("~/.simplebarrc"))],
+            setup: "Nothing to do: colors are merged into ~/.simplebarrc (or into `base`, written to ~/.simplebarrc). \
+                    The bar's background can use {{cache}}/wallpaper-blur.jpg.",
             ..base
         },
         "nvim" => Target {

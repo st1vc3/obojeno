@@ -350,11 +350,16 @@ pub fn write_if_changed(path: &Path, contents: &[u8]) -> std::io::Result<bool> {
     std::fs::create_dir_all(dir)?;
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     tmp.write_all(contents)?;
-    // Keep the permissions of the file being replaced, else use 0644.
-    let mode = std::fs::metadata(path).map_or(0o644, |m| {
-        use std::os::unix::fs::PermissionsExt;
-        m.permissions().mode()
-    });
+    // Keep the permissions of a file being replaced, else use 0644. Not those
+    // of a symlink's target: replacing a link into the read-only Nix store
+    // must not make the new file read-only.
+    let mode = std::fs::symlink_metadata(path)
+        .ok()
+        .filter(std::fs::Metadata::is_file)
+        .map_or(0o644, |m| {
+            use std::os::unix::fs::PermissionsExt;
+            m.permissions().mode()
+        });
     {
         use std::os::unix::fs::PermissionsExt;
         tmp.as_file()
@@ -632,6 +637,27 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"two");
         let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().collect();
         assert_eq!(leftovers.len(), 1, "temp files left behind");
+    }
+
+    #[test]
+    fn write_if_changed_replaces_symlinks_with_writable_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let (tmp, ..) = setup();
+        let target = tmp.path().join("store-file");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let link = tmp.path().join("config");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_if_changed(&link, b"new").unwrap();
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.is_file(), "the link became a file");
+        assert_eq!(meta.permissions().mode() & 0o777, 0o644);
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"old",
+            "the link target is untouched"
+        );
     }
 
     #[test]

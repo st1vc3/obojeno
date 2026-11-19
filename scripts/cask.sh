@@ -30,7 +30,7 @@ cask "obojeno" do
     strategy :github_latest
   end
 
-  depends_on macos: ">= :tahoe"
+  depends_on macos: :tahoe
 
   app "Obojeno.app"
   binary "#{appdir}/Obojeno.app/Contents/Helpers/obojeno"

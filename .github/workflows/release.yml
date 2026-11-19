@@ -99,7 +99,7 @@ jobs:
           git clone "https://x-access-token:$TAP_TOKEN@github.com/st1vc3/homebrew-tap.git" "$RUNNER_TEMP/tap"
           mkdir -p "$RUNNER_TEMP/tap/Casks"
           ./scripts/cask.sh "$VERSION" "$SHA256" ${NOTARIZED:-} > "$RUNNER_TEMP/tap/Casks/obojeno.rb"
-          brew style "$RUNNER_TEMP/tap/Casks/obojeno.rb"
+          ./scripts/check-cask.sh "$RUNNER_TEMP/tap/Casks/obojeno.rb"
           cd "$RUNNER_TEMP/tap"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

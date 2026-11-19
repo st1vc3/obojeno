@@ -22,7 +22,7 @@ cask "obojeno" do
 
   url "https://github.com/st1vc3/obojeno/releases/download/v#{version}/Obojeno-#{version}.zip"
   name "obojeno"
-  desc "Wallpaper-driven Material You theming for macOS"
+  desc "Wallpaper-driven Material You theming"
   homepage "https://github.com/st1vc3/obojeno"
 
   livecheck do
@@ -40,9 +40,10 @@ if [[ "$notarized" != "--notarized" ]]; then
   cat <<'CASK'
 
   # Signed ad hoc, not notarized.
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Obojeno.app"]
+  postflight_steps do
+    run "/usr/bin/xattr",
+        args:           ["-dr", "com.apple.quarantine", "{{appdir}}/Obojeno.app"],
+        writable_paths: ["{{appdir}}/Obojeno.app"]
   end
 CASK
 fi

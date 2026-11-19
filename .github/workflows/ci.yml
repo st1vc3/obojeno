@@ -44,5 +44,7 @@ jobs:
       - run: swift test --package-path app
       - name: Cask style
         run: |
-          ./scripts/cask.sh 0.0.0 "$(printf '0%.0s' {1..64})" > "$RUNNER_TEMP/obojeno.rb"
-          brew style "$RUNNER_TEMP/obojeno.rb"
+          for notarized in "" --notarized; do
+            ./scripts/cask.sh 0.0.0 "$(printf '0%.0s' {1..64})" $notarized > "$RUNNER_TEMP/obojeno.rb"
+            ./scripts/check-cask.sh "$RUNNER_TEMP/obojeno.rb"
+          done

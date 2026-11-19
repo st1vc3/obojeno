@@ -120,6 +120,28 @@ fn to_pixels(image: &CGImage) -> Result<DynamicImage, String> {
         .ok_or_else(|| "pixel buffer size mismatch".to_owned())
 }
 
+/// Opaque pixels as an image for Core Animation, decoded already, so
+/// showing it costs nothing on the main thread.
+pub fn cg_image_from(pixels: &RgbaImage) -> Option<CFRetained<CGImage>> {
+    let (width, height) = (pixels.width() as usize, pixels.height() as usize);
+    let srgb = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }))?;
+    let mut bytes = pixels.as_raw().clone();
+    // SAFETY: `bytes` is `height` rows of `width * 4` bytes and outlives the
+    // context, which is dropped below; the image copies the pixels.
+    unsafe {
+        let context = CGBitmapContextCreate(
+            bytes.as_mut_ptr().cast(),
+            width,
+            height,
+            8,
+            width * 4,
+            Some(&srgb),
+            CGImageAlphaInfo::NoneSkipLast.0 | CGImageByteOrderInfo::Order32Big.0,
+        )?;
+        objc2_core_graphics::CGBitmapContextCreateImage(Some(&context))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

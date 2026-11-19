@@ -299,6 +299,8 @@ fn publish(applied: &Applied, config: &Config) -> anyhow::Result<()> {
     )?;
     if let Some(mtm) = MainThreadMarker::new() {
         desktop::apply_settings(config.finish, config.lid_animation, mtm);
+        // Ready before the lid moves, so it never waits on decoding.
+        desktop::prepare_lid(mtm);
     }
     *daemon().current.lock().expect("state lock") = Some(state.clone());
     *daemon().config_text.lock().expect("config lock") =

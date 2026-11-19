@@ -5,10 +5,9 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
-use anyhow::Context as _;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyClass, AnyObject};
-use objc2::{MainThreadMarker, MainThreadOnly as _, msg_send};
+use objc2::runtime::AnyObject;
+use objc2::{MainThreadMarker, MainThreadOnly as _};
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSScreen, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
     NSWorkspace,
@@ -101,16 +100,20 @@ struct LidWindow {
     sinking: Retained<CALayer>,
     /// Softens the edges of `sinking` more the further the lid closes.
     feather: Retained<CALayer>,
+    /// The wallpaper, then two blurred copies over it that fade in as the
+    /// lid closes: crossfading is smooth where animating a blur is not.
     wallpaper: Retained<CALayer>,
+    soft: Retained<CALayer>,
+    softer: Retained<CALayer>,
     /// Comes down from the top as the lid closes, over the menu bar too.
     curtain_window: Retained<NSWindow>,
     curtain: Retained<CAGradientLayer>,
     /// Darkens the edges of the screen.
     vignette: Retained<CAGradientLayer>,
     shade: Retained<CALayer>,
-    blur: Retained<AnyObject>,
-    /// The wallpaper the layer shows, to reload when it changes.
+    /// The wallpaper the layers show, and one being prepared.
     showing: Option<PathBuf>,
+    loading: Option<PathBuf>,
     visible: bool,
 }
 
@@ -351,10 +354,7 @@ fn feather_frame(bounds: CGRect, t: CGFloat) -> CGRect {
 fn lid_window(screen: &NSScreen, mtm: MainThreadMarker) -> Option<LidWindow> {
     let frame = screen.frame();
     let window = overlay_window(frame, Layer::Wallpaper, mtm);
-    let view = window.contentView()?;
-    // The blur is a Core Image filter on the layer.
-    view.setLayerUsesCoreImageFilters(true);
-    let root = view.layer()?;
+    let root = window.contentView()?.layer()?;
     let bounds = CGRect::new(CGPoint::new(0.0, 0.0), frame.size);
 
     CATransaction::begin();
@@ -376,10 +376,17 @@ fn lid_window(screen: &NSScreen, mtm: MainThreadMarker) -> Option<LidWindow> {
     unsafe { feather.setContents(Some(transition::cf_object(&image))) };
     // SAFETY: any layer is a valid mask.
     unsafe { sinking.setMask(Some(&feather)) };
-    let wallpaper = CALayer::new();
-    wallpaper.setFrame(bounds);
-    wallpaper.setContentsScale(screen.backingScaleFactor());
-    sinking.addSublayer(&wallpaper);
+    let image_layer = |opacity: f32| {
+        let layer = CALayer::new();
+        layer.setFrame(bounds);
+        layer.setContentsScale(screen.backingScaleFactor());
+        layer.setOpacity(opacity);
+        sinking.addSublayer(&layer);
+        layer
+    };
+    let wallpaper = image_layer(1.0);
+    let soft = image_layer(0.0);
+    let softer = image_layer(0.0);
     let black = NSColor::blackColor().CGColor();
     let clear = NSColor::clearColor().CGColor();
     let vignette = CAGradientLayer::new();
@@ -405,7 +412,6 @@ fn lid_window(screen: &NSScreen, mtm: MainThreadMarker) -> Option<LidWindow> {
     root.addSublayer(&shade);
     CATransaction::commit();
 
-    let blur = gaussian_blur()?;
     let curtain_window = overlay_window(frame, Layer::Curtain, mtm);
     CATransaction::begin();
     CATransaction::setDisableActions(true);
@@ -430,12 +436,14 @@ fn lid_window(screen: &NSScreen, mtm: MainThreadMarker) -> Option<LidWindow> {
         sinking,
         feather,
         wallpaper,
+        soft,
+        softer,
         curtain_window,
         curtain,
         vignette,
         shade,
-        blur,
         showing: None,
+        loading: None,
         visible: false,
     })
 }
@@ -469,15 +477,6 @@ fn identity() -> CATransform3D {
         m43: 0.0,
         m44: 1.0,
     }
-}
-
-fn gaussian_blur() -> Option<Retained<AnyObject>> {
-    let class = AnyClass::get(c"CIFilter")?;
-    // SAFETY: +[CIFilter filterWithName:] returns an autoreleased filter or
-    // nil; the name is a built-in filter.
-    let filter: Option<Retained<AnyObject>> =
-        unsafe { msg_send![class, filterWithName: ns_string!("CIGaussianBlur")] };
-    filter
 }
 
 /// Follows the lid and turns angles into the effect's progress: 0 at rest,
@@ -557,12 +556,11 @@ pub fn lid_progress(t: f64, mtm: MainThreadMarker) {
 /// a curtain while the wallpaper blurs and sinks a little toward the
 /// bottom. Main thread only.
 fn show_lid(t: f64, mtm: MainThreadMarker) {
+    if t > 0.0 && OVERLAYS.with_borrow(|o| o.lid.iter().any(|l| !l.visible)) {
+        // Usually prepared when the wallpaper changed already.
+        prepare_lid(mtm);
+    }
     OVERLAYS.with_borrow_mut(|overlays| {
-        if overlays.lid.is_empty() {
-            return;
-        }
-        let workspace = NSWorkspace::sharedWorkspace();
-        let screens = NSScreen::screens(mtm);
         for lid in &mut overlays.lid {
             if t <= 0.0 {
                 if lid.visible {
@@ -573,19 +571,14 @@ fn show_lid(t: f64, mtm: MainThreadMarker) {
                 continue;
             }
             if !lid.visible {
-                if let Some(screen) = screens.iter().find(|s| is_builtin(s))
-                    && let Err(e) = show_wallpaper(lid, &workspace, &screen)
-                {
-                    tracing::warn!("lid animation: {e:#}");
-                    continue;
-                }
                 lid.window.orderFrontRegardless();
                 lid.curtain_window.orderFrontRegardless();
                 lid.visible = true;
             }
             CATransaction::begin();
-            // Short linear steps between sensor readings keep it fluid.
-            CATransaction::setAnimationDuration(0.06);
+            // Every frame comes smoothed from the watcher; implicit
+            // animations would only lag behind it.
+            CATransaction::setDisableActions(true);
             // Only a hint of tipping away (negative rotation; positive
             // brings the top toward you); mostly it sinks toward the
             // bottom edge it is anchored at.
@@ -601,49 +594,151 @@ fn show_lid(t: f64, mtm: MainThreadMarker) {
             {
                 lid.vignette.setOpacity((t * 0.7) as f32);
                 lid.shade.setOpacity((t * 0.25) as f32);
+                lid.soft.setOpacity(ease(t / 0.35) as f32);
+                lid.softer.setOpacity(ease((t - 0.3) / 0.5) as f32);
             }
-            let radius = NSNumber::new_f64(t * 60.0);
-            // SAFETY: inputRadius takes an NSNumber.
-            let _: () = unsafe {
-                msg_send![&lid.blur, setValue: &*radius, forKey: ns_string!("inputRadius")]
-            };
-            let filters = NSArray::from_retained_slice(std::slice::from_ref(&lid.blur));
-            // SAFETY: an array of CIFilters, as `filters` expects.
-            unsafe { lid.wallpaper.setFilters(Some(&filters)) };
             CATransaction::commit();
         }
     });
 }
 
-/// Loads the wallpaper of `screen` into the lid layer, drawn like macOS
-/// draws it.
-fn show_wallpaper(
-    lid: &mut LidWindow,
-    workspace: &NSWorkspace,
-    screen: &NSScreen,
-) -> anyhow::Result<()> {
-    let url = workspace
-        .desktopImageURLForScreen(screen)
-        .context("no wallpaper")?;
-    let path = PathBuf::from(url.path().context("wallpaper is not a file")?.to_string());
-    if lid.showing.as_deref() == Some(path.as_path()) {
-        return Ok(());
-    }
-    let image: objc2_core_foundation::CFRetained<CGImage> =
-        imageio::cg_image(Path::new(&path)).map_err(anyhow::Error::msg)?;
-    let (gravity, fill) = transition::scaling(workspace, screen, &image);
-    CATransaction::begin();
-    CATransaction::setDisableActions(true);
-    // SAFETY: a CGImage is valid layer contents.
-    unsafe {
-        lid.wallpaper
-            .setContents(Some(transition::cf_object(&image)))
+/// Smoothstep on `x` clamped to 0..=1.
+fn ease(x: f64) -> f64 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
+/// Blur strengths of the two copies, in pixels at `LID_BLUR_WIDTH`.
+const LID_BLURS: [f32; 2] = [3.0, 9.0];
+/// Blurred copies are this wide: blurry anyway, so small and cheap.
+const LID_BLUR_WIDTH: u32 = 480;
+
+/// Loads the built-in screen's wallpaper and its blurred copies into the
+/// lid layers, decoding on a background thread, unless they show it already.
+pub fn prepare_lid(mtm: MainThreadMarker) {
+    let Some(screen) = NSScreen::screens(mtm).iter().find(|s| is_builtin(s)) else {
+        return;
     };
-    lid.wallpaper.setContentsGravity(gravity);
-    lid.wallpaper.setBackgroundColor(fill.as_deref());
-    CATransaction::commit();
-    lid.showing = Some(path);
-    Ok(())
+    let workspace = NSWorkspace::sharedWorkspace();
+    let Some(path) = workspace
+        .desktopImageURLForScreen(&screen)
+        .and_then(|url| url.path())
+        .map(|p| PathBuf::from(p.to_string()))
+    else {
+        return;
+    };
+    let start = OVERLAYS.with_borrow_mut(|overlays| {
+        let Some(lid) = overlays.lid.first_mut() else {
+            return false;
+        };
+        if lid.showing.as_ref() == Some(&path) || lid.loading.as_ref() == Some(&path) {
+            return false;
+        }
+        lid.loading = Some(path.clone());
+        true
+    });
+    if !start {
+        return;
+    }
+    let frame = screen.frame();
+    let scale = screen.backingScaleFactor();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Screen sizes.
+    let max_side = (frame.size.width.max(frame.size.height) * scale).round() as u32;
+    std::thread::spawn(move || {
+        let images = lid_images(&path, max_side);
+        dispatch2::DispatchQueue::main().exec_async(move || {
+            if let Some(mtm) = MainThreadMarker::new() {
+                install_lid_images(&path, images, mtm);
+            }
+        });
+    });
+}
+
+/// The wallpaper at screen size and its blurred copies.
+fn lid_images(path: &Path, max_side: u32) -> Result<[image::RgbaImage; 3], String> {
+    let sharp = imageio::thumbnail(path, max_side)?.to_rgba8();
+    let height = (u64::from(sharp.height()) * u64::from(LID_BLUR_WIDTH)
+        / u64::from(sharp.width().max(1)))
+    .max(1);
+    let small = image::imageops::resize(
+        &sharp,
+        LID_BLUR_WIDTH,
+        u32::try_from(height).unwrap_or(1),
+        image::imageops::FilterType::Triangle,
+    );
+    let [soft, softer] = LID_BLURS.map(|sigma| image::imageops::blur(&small, sigma));
+    Ok([sharp, soft, softer])
+}
+
+fn install_lid_images(
+    path: &Path,
+    images: Result<[image::RgbaImage; 3], String>,
+    mtm: MainThreadMarker,
+) {
+    let workspace = NSWorkspace::sharedWorkspace();
+    let screen = NSScreen::screens(mtm).iter().find(|s| is_builtin(s));
+    OVERLAYS.with_borrow_mut(|overlays| {
+        let Some(lid) = overlays.lid.first_mut() else {
+            return;
+        };
+        if lid.loading.as_deref() != Some(path) {
+            return; // Replaced by a newer wallpaper.
+        }
+        lid.loading = None;
+        let images = match images {
+            Ok(images) => images,
+            Err(e) => {
+                tracing::warn!("lid animation: {}: {e}", path.display());
+                return;
+            }
+        };
+        let Some(cg) = images
+            .iter()
+            .map(imageio::cg_image_from)
+            .collect::<Option<Vec<_>>>()
+        else {
+            return;
+        };
+        let Some(screen) = screen else {
+            return;
+        };
+        // All three are scaled like macOS draws the wallpaper.
+        let (gravity, fill) = transition::scaling(&workspace, &screen, &cg[0]);
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        for (layer, image) in [&lid.wallpaper, &lid.soft, &lid.softer]
+            .into_iter()
+            .zip(&cg)
+        {
+            // SAFETY: a CGImage is valid layer contents.
+            unsafe { layer.setContents(Some(transition::cf_object(image))) };
+            layer.setContentsGravity(gravity);
+            layer.setBackgroundColor(fill.as_deref());
+        }
+        CATransaction::commit();
+        lid.showing = Some(path.to_path_buf());
+    });
+}
+
+/// Eases the shown progress toward the sensor's, so whole-degree readings
+/// become a continuous movement.
+#[derive(Debug, Default)]
+struct Smoother {
+    value: f64,
+}
+
+impl Smoother {
+    /// How quickly it follows, as a time constant.
+    const LAG: f64 = 0.07;
+
+    fn step(&mut self, target: f64, dt: std::time::Duration) -> f64 {
+        let k = 1.0 - (-dt.as_secs_f64() / Self::LAG).exp();
+        self.value += (target - self.value) * k;
+        if (target - self.value).abs() < 0.001 {
+            self.value = target;
+        }
+        self.value
+    }
 }
 
 /// Polls the lid sensor on a background thread and forwards the progress
@@ -654,33 +749,45 @@ pub fn watch_lid() {
         tracing::info!("no lid sensor; the lid animation is off");
         return;
     };
-    let spawned =
-        std::thread::Builder::new()
-            .name("obojeno-lid".into())
-            .spawn(move || {
-                let mut tracker = LidTracker::default();
-                let mut last: Option<u16> = None;
-                let mut shown = 0.0;
-                loop {
-                    let angle = sensor.angle();
-                    if let Some(angle) = angle {
-                        let t = tracker.update(angle, std::time::Instant::now());
-                        if (t - shown).abs() > f64::EPSILON {
-                            shown = t;
-                            dispatch2::DispatchQueue::main().exec_async(move || {
-                                if let Some(mtm) = MainThreadMarker::new() {
-                                    lid_progress(t, mtm);
-                                }
-                            });
-                        }
-                    }
-                    let moving = angle != last;
-                    last = angle;
-                    std::thread::sleep(std::time::Duration::from_millis(
-                        if moving || shown > 0.0 { 33 } else { 250 },
-                    ));
+    let spawned = std::thread::Builder::new()
+        .name("obojeno-lid".into())
+        .spawn(move || {
+            let mut tracker = LidTracker::default();
+            let mut smoother = Smoother::default();
+            let mut target = 0.0;
+            let mut sent = 0.0;
+            let mut last_angle = None;
+            let mut last_tick = std::time::Instant::now();
+            loop {
+                let now = std::time::Instant::now();
+                let angle = sensor.angle();
+                if let Some(angle) = angle {
+                    target = tracker.update(angle, now);
                 }
-            });
+                let shown = smoother.step(target, now - last_tick);
+                last_tick = now;
+                if (shown - sent).abs() > f64::EPSILON {
+                    sent = shown;
+                    dispatch2::DispatchQueue::main().exec_async(move || {
+                        if let Some(mtm) = MainThreadMarker::new() {
+                            lid_progress(shown, mtm);
+                        }
+                    });
+                }
+                let moving = angle != last_angle;
+                last_angle = angle;
+                // A frame at 120 Hz while it glides, quick polls while the
+                // lid moves or the effect shows, slow ones at rest.
+                let pause = if (shown - target).abs() > f64::EPSILON {
+                    8
+                } else if moving || shown > 0.0 {
+                    16
+                } else {
+                    250
+                };
+                std::thread::sleep(std::time::Duration::from_millis(pause));
+            }
+        });
     if let Err(e) = spawned {
         tracing::warn!("cannot watch the lid: {e}");
     }
@@ -720,6 +827,32 @@ mod tests {
         lid.update(30, later(6));
         assert!((lid.update(30, later(60)) - lid.update(30, later(61))).abs() < f64::EPSILON);
         assert!(lid.update(30, later(62)) > 0.5);
+    }
+
+    #[test]
+    fn smoother_glides_to_the_target() {
+        let frame = std::time::Duration::from_millis(8);
+        let mut smoother = Smoother::default();
+        let first = smoother.step(1.0, frame);
+        assert!(first > 0.0 && first < 0.2, "{first}");
+        let mut previous = first;
+        for _ in 0..200 {
+            let next = smoother.step(1.0, frame);
+            assert!(next >= previous);
+            previous = next;
+        }
+        assert!((previous - 1.0).abs() < f64::EPSILON, "reaches it exactly");
+    }
+
+    #[test]
+    fn lid_images_are_the_wallpaper_and_two_small_blurs() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../obojeno-core/tests/fixtures/ember.png");
+        let [sharp, soft, softer] = lid_images(&path, 120).expect("decodes");
+        assert_eq!(sharp.dimensions(), (120, 75));
+        assert_eq!(soft.width(), LID_BLUR_WIDTH);
+        assert_eq!(soft.dimensions(), softer.dimensions());
+        assert!(imageio::cg_image_from(&soft).is_some());
     }
 
     #[test]

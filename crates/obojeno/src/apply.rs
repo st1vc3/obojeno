@@ -1,35 +1,24 @@
 //! Generating the palette and theming every target.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Context as _;
 use obojeno_core::config::Config;
+use obojeno_core::ipc::{Outcome, Report, TargetReport};
 use obojeno_core::output::{self, Wallpaper, write_if_changed};
 use obojeno_core::template::Renderer;
 use obojeno_core::{Color, Mode, Palette, palette};
 use serde::Serialize;
 
 use crate::paths::Paths;
-use crate::reload::{self, Outcome};
+use crate::reload;
 use crate::state::{Source, State};
 
-/// What happened to one target.
+/// The outcome of theming, plus the palette for the daemon's state.
 #[derive(Debug)]
-pub struct TargetReport {
-    pub name: String,
-    /// Whether the target has files at all (borders only reloads).
-    pub has_files: bool,
-    pub written: Vec<PathBuf>,
-    pub reload: Option<Outcome>,
-    pub error: Option<String>,
-}
-
-#[derive(Debug)]
-pub struct Report {
-    pub source: Color,
-    pub mode: Mode,
-    pub wallpaper: Option<PathBuf>,
-    pub targets: Vec<TargetReport>,
+pub struct Applied {
+    pub report: Report,
+    pub palette: Palette,
 }
 
 /// The palette and everything it was made from, for other tools and the GUI.
@@ -48,7 +37,7 @@ pub fn apply(
     paths: &Paths,
     mode: Option<Mode>,
     wallpaper: Option<&Path>,
-) -> anyhow::Result<Report> {
+) -> anyhow::Result<Applied> {
     let config = Config::load(&paths.config_file)?;
     let mut state = State::load(&paths.state_file());
     let mode = mode.unwrap_or_else(crate::macos::system_mode);
@@ -94,11 +83,14 @@ pub fn apply(
     let targets = render_and_write(&config, paths, &palette, mode, wallpaper.as_ref())?;
     state.save(&paths.state_file())?;
 
-    Ok(Report {
-        source,
-        mode,
-        wallpaper: wallpaper.map(|w| w.path),
-        targets,
+    Ok(Applied {
+        report: Report {
+            source,
+            mode,
+            wallpaper: wallpaper.map(|w| w.path),
+            targets,
+        },
+        palette,
     })
 }
 

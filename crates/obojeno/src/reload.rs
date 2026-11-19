@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use obojeno_core::ipc::Outcome;
 use obojeno_core::targets::{Reload, Signal};
 
 use crate::macos;
@@ -14,23 +15,13 @@ use crate::macos;
 /// Reload commands talk to running apps; anything slower is stuck.
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Outcome {
-    Done,
-    /// The app is not running, so there was nothing to reload.
-    NotRunning,
-    /// The command does not exist on this machine.
-    NotInstalled(String),
-    Failed(String),
-}
-
 /// Runs a target's reloads unless its guard process is missing.
 pub fn reload_target(reloads: &[Reload], only_if_running: Option<&str>) -> Outcome {
     if let Some(process) = only_if_running {
         match macos::pids_named(process) {
             Ok(pids) if pids.is_empty() => return Outcome::NotRunning,
             Ok(_) => {}
-            Err(e) => return Outcome::Failed(e.to_string()),
+            Err(e) => return Outcome::failed(e.to_string()),
         }
     }
     for reload in reloads {
@@ -52,14 +43,14 @@ fn send_signal(process: &str, signal: Signal) -> Outcome {
     let pids = match macos::pids_named(process) {
         Ok(pids) if pids.is_empty() => return Outcome::NotRunning,
         Ok(pids) => pids,
-        Err(e) => return Outcome::Failed(e.to_string()),
+        Err(e) => return Outcome::failed(e.to_string()),
     };
     for pid in pids {
         // SAFETY: plain syscall; a pid that exited in the meantime just fails.
         if unsafe { libc::kill(pid, signal) } != 0 {
             let err = std::io::Error::last_os_error();
             if err.raw_os_error() != Some(libc::ESRCH) {
-                return Outcome::Failed(format!("signalling {process} ({pid}): {err}"));
+                return Outcome::failed(format!("signalling {process} ({pid}): {err}"));
             }
         }
     }
@@ -80,9 +71,11 @@ fn command(args: &[String]) -> Outcome {
     {
         Ok(child) => child,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Outcome::NotInstalled(program.clone());
+            return Outcome::NotInstalled {
+                command: program.clone(),
+            };
         }
-        Err(e) => return Outcome::Failed(format!("{program}: {e}")),
+        Err(e) => return Outcome::failed(format!("{program}: {e}")),
     };
     let pid = child.id();
     let mut stderr = child.stderr.take().expect("stderr is piped");
@@ -96,17 +89,17 @@ fn command(args: &[String]) -> Outcome {
         Ok((Ok(status), _)) if status.success() => Outcome::Done,
         Ok((Ok(status), stderr)) => {
             let detail = stderr.trim();
-            Outcome::Failed(if detail.is_empty() {
+            Outcome::failed(if detail.is_empty() {
                 format!("{program} exited with {status}")
             } else {
                 format!("{program}: {detail}")
             })
         }
-        Ok((Err(e), _)) => Outcome::Failed(format!("{program}: {e}")),
+        Ok((Err(e), _)) => Outcome::failed(format!("{program}: {e}")),
         Err(_) => {
             // SAFETY: plain syscall on the child we spawned.
             unsafe { libc::kill(i32::try_from(pid).unwrap_or(0), libc::SIGKILL) };
-            Outcome::Failed(format!(
+            Outcome::failed(format!(
                 "{program} did not finish within {}s",
                 TIMEOUT.as_secs()
             ))
@@ -156,9 +149,11 @@ mod tests {
         assert_eq!(reload_target(&[cmd(&["true"])], None), Outcome::Done);
         assert_eq!(
             reload_target(&[cmd(&["obojeno-no-such-command"])], None),
-            Outcome::NotInstalled("obojeno-no-such-command".to_owned())
+            Outcome::NotInstalled {
+                command: "obojeno-no-such-command".to_owned()
+            }
         );
-        let Outcome::Failed(msg) =
+        let Outcome::Failed { message: msg } =
             reload_target(&[cmd(&["sh", "-c", "echo oops >&2; exit 3"])], None)
         else {
             panic!("expected failure");
@@ -174,7 +169,7 @@ mod tests {
             &[cmd(&["false"]), cmd(&["touch", marker.to_str().unwrap()])],
             None,
         );
-        assert!(matches!(outcome, Outcome::Failed(_)));
+        assert!(matches!(outcome, Outcome::Failed { .. }));
         assert!(!marker.exists());
     }
 

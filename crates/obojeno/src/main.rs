@@ -1,25 +1,25 @@
+mod actions;
 mod apply;
+mod daemon;
 mod imageio;
 mod macos;
 mod paths;
 mod reload;
 mod state;
 mod transition;
+mod watch;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use obojeno_core::config::{Config, TransitionStyle};
+use obojeno_core::ipc::{ModeChange, Outcome, Reply, Report, Request};
 use obojeno_core::targets::{self, OutputKind};
 use obojeno_core::{Color, Mode, Palette, SchemeVariant, palette};
 
-use crate::apply::Report;
 use crate::paths::Paths;
-use crate::reload::Outcome;
-use crate::state::{Source, State};
 
 /// Wallpaper-driven theming for macOS.
 #[derive(Parser)]
@@ -48,9 +48,6 @@ enum Command {
     /// Set the wallpaper on all screens and theme everything from it
     Set {
         image: PathBuf,
-        /// Theme for this mode instead of the system appearance
-        #[arg(long)]
-        mode: Option<Mode>,
         /// fade, grow-circle, wipe or none [default: from the config]
         #[arg(long)]
         transition: Option<TransitionStyle>,
@@ -71,9 +68,10 @@ enum Command {
         /// Go back to following the wallpaper
         #[arg(long, conflicts_with = "color")]
         wallpaper: bool,
-        #[arg(long)]
-        mode: Option<Mode>,
     },
+    /// Run in the background: follow wallpaper and appearance changes, and
+    /// serve the menu bar app
+    Daemon,
     /// Show the palette of an image (default: the current wallpaper)
     Preview {
         image: Option<PathBuf>,
@@ -99,15 +97,22 @@ fn main() -> ExitCode {
         1 => "info",
         _ => "debug",
     };
-    tracing_subscriber::fmt()
+    // In a terminal: colors, no timestamps. In a log file (the daemon under
+    // launchd): plain text with timestamps.
+    let terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    let logger = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("OBOJENO_LOG")
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level)),
         )
         .with_writer(std::io::stderr)
-        .without_time()
-        .with_target(false)
-        .init();
+        .with_ansi(terminal)
+        .with_target(false);
+    if terminal {
+        logger.without_time().init();
+    } else {
+        logger.init();
+    }
 
     match run(cli) {
         Ok(code) => code,
@@ -120,54 +125,30 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let paths = Paths::from_env(cli.config.as_deref())?;
-    match cli.command {
-        Command::Apply { mode } => Ok(print_report(&apply::apply(&paths, mode, None)?, &paths)),
+    let request = match cli.command {
+        Command::Apply { mode } => Request::Apply { mode },
         Command::Set {
             image,
-            mode,
             transition,
             duration,
-        } => {
-            let image = std::fs::canonicalize(&image)
-                .with_context(|| format!("{} does not exist", image.display()))?;
-            // Fail before touching the desktop if it is not an image.
-            imageio::decode(&image)
-                .map_err(anyhow::Error::msg)
-                .with_context(|| format!("{} is not a readable image", image.display()))?;
-            let config = Config::load(&paths.config_file)?;
-            let duration = duration.unwrap_or(config.transition.duration);
-            let options = transition::Options {
-                style: transition.unwrap_or(config.transition.style),
-                duration: Duration::try_from_secs_f64(duration)
-                    .with_context(|| format!("invalid duration {duration}"))?,
-                origin: None,
-            };
-            set_source(&paths, Source::Wallpaper)?;
-            let report = transition::set_wallpaper(&image, &options, || {
-                apply::apply(&paths, mode, Some(&image))
-            })??;
-            Ok(print_report(&report, &paths))
-        }
-        Command::Mode { mode } => {
-            let mode = match mode {
-                ModeChoice::Light => Mode::Light,
-                ModeChoice::Dark => Mode::Dark,
-                ModeChoice::Toggle => match macos::system_mode() {
-                    Mode::Light => Mode::Dark,
-                    Mode::Dark => Mode::Light,
-                },
-            };
-            macos::set_system_mode(mode)?;
-            // Pass the mode on: macOS reports the old one for a moment.
-            Ok(print_report(
-                &apply::apply(&paths, Some(mode), None)?,
-                &paths,
-            ))
-        }
-        Command::Color { color, mode, .. } => {
-            let source = color.map_or(Source::Wallpaper, |color| Source::Color { color });
-            set_source(&paths, source)?;
-            Ok(print_report(&apply::apply(&paths, mode, None)?, &paths))
+        } => Request::SetWallpaper {
+            // The daemon has its own working directory.
+            path: std::path::absolute(&image)?,
+            transition,
+            duration,
+            origin: None,
+        },
+        Command::Mode { mode } => Request::SetMode {
+            mode: match mode {
+                ModeChoice::Light => ModeChange::Light,
+                ModeChoice::Dark => ModeChange::Dark,
+                ModeChoice::Toggle => ModeChange::Toggle,
+            },
+        },
+        Command::Color { color, .. } => Request::SetColor { color },
+        Command::Daemon => {
+            daemon::run(paths)?;
+            return Ok(ExitCode::SUCCESS);
         }
         Command::Preview { image, scheme } => {
             let config = Config::load(&paths.config_file)?;
@@ -185,19 +166,21 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 config.contrast,
             );
             print_preview(&palette, &candidates);
-            Ok(ExitCode::SUCCESS)
+            return Ok(ExitCode::SUCCESS);
         }
         Command::Targets { name } => {
             print_targets(name.as_deref(), &paths)?;
-            Ok(ExitCode::SUCCESS)
+            return Ok(ExitCode::SUCCESS);
         }
-    }
-}
-
-fn set_source(paths: &Paths, source: Source) -> anyhow::Result<()> {
-    let mut state = State::load(&paths.state_file());
-    state.source = source;
-    state.save(&paths.state_file())
+    };
+    // A running daemon does the work, so changes animate and never race it.
+    let report = match daemon::request(&paths, &request)? {
+        Some(Reply::Report(report)) => report,
+        Some(Reply::Error { message }) => anyhow::bail!(message),
+        Some(Reply::State(_)) => anyhow::bail!("unexpected reply from the daemon"),
+        None => actions::execute(&paths, &request)?.report,
+    };
+    Ok(print_report(&report, &paths))
 }
 
 fn swatch(c: Color) -> String {
@@ -244,8 +227,8 @@ fn print_report(report: &Report, paths: &Paths) -> ExitCode {
                 None => None,
                 Some(Outcome::Done) => Some("reloaded".to_owned()),
                 Some(Outcome::NotRunning) => Some("not running".to_owned()),
-                Some(Outcome::NotInstalled(cmd)) => Some(format!("{cmd} not installed")),
-                Some(Outcome::Failed(e)) => {
+                Some(Outcome::NotInstalled { command }) => Some(format!("{command} not installed")),
+                Some(Outcome::Failed { message: e }) => {
                     failed = true;
                     Some(format!("reload failed: {e}"))
                 }

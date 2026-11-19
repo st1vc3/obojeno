@@ -195,30 +195,31 @@ fn corner_path(
 ) -> objc2_core_foundation::CFRetained<CGMutablePath> {
     let (w, h, r) = (size.width, size.height, radius);
     let path = CGMutablePath::new();
-    // Each corner: the corner point, along one edge, an arc tangent to both
-    // edges, back. (0, 0) is the bottom left.
-    let corner = |corner: (CGFloat, CGFloat), along_x: CGFloat, along_y: CGFloat| {
+    // Each corner is a mask from just outside the screen to the rounded
+    // curve. Reaching past the edges keeps them from being anti-aliased,
+    // which left a hairline of wallpaper along the edge. `dx`/`dy` point
+    // from the corner into the screen; (0, 0) is the bottom left.
+    const BLEED: CGFloat = 2.0;
+    let corner = |(cx, cy): (CGFloat, CGFloat), dx: CGFloat, dy: CGFloat| {
+        let (out_x, out_y) = (cx - dx * BLEED, cy - dy * BLEED);
         // SAFETY: null transforms are allowed.
         unsafe {
-            CGMutablePath::move_to_point(Some(&path), std::ptr::null(), corner.0, corner.1);
-            CGMutablePath::add_line_to_point(Some(&path), std::ptr::null(), corner.0, along_y);
-            CGMutablePath::add_arc_to_point(
-                Some(&path),
-                std::ptr::null(),
-                corner.0,
-                corner.1,
-                along_x,
-                corner.1,
-                r,
-            );
-            CGMutablePath::close_subpath(Some(&path));
+            let p = Some(&*path);
+            let none = std::ptr::null();
+            CGMutablePath::move_to_point(p, none, out_x, out_y);
+            CGMutablePath::add_line_to_point(p, none, out_x, cy + dy * r);
+            CGMutablePath::add_line_to_point(p, none, cx, cy + dy * r);
+            // The curve, tangent to both edges, ending r along the other.
+            CGMutablePath::add_arc_to_point(p, none, cx, cy, cx + dx * r, cy, r);
+            CGMutablePath::add_line_to_point(p, none, cx + dx * r, out_y);
+            CGMutablePath::close_subpath(p);
         }
     };
-    corner((0.0, 0.0), r, r);
-    corner((w, 0.0), w - r, r);
+    corner((0.0, 0.0), 1.0, 1.0);
+    corner((w, 0.0), -1.0, 1.0);
     if top_too {
-        corner((0.0, h), r, h - r);
-        corner((w, h), w - r, h - r);
+        corner((0.0, h), 1.0, -1.0);
+        corner((w, h), -1.0, -1.0);
     }
     path
 }
@@ -468,5 +469,77 @@ mod tests {
         assert!((progress(60) - 0.5).abs() < f64::EPSILON);
         assert!((progress(25) - 1.0).abs() < f64::EPSILON);
         assert!((progress(0) - 1.0).abs() < f64::EPSILON);
+    }
+}
+
+#[cfg(test)]
+mod corner_tests {
+    use super::*;
+    use objc2_core_graphics::CGContext;
+
+    /// Renders the corner masks into a `w`×`h` alpha bitmap (row 0 at the
+    /// bottom, like the layer).
+    fn render(w: usize, h: usize, radius: CGFloat, top_too: bool) -> Vec<u8> {
+        let mut pixels = vec![0u8; w * h * 4];
+        let space = CGColorSpace::new_device_rgb().unwrap();
+        #[allow(clippy::cast_precision_loss)]
+        let size = CGSize::new(w as CGFloat, h as CGFloat);
+        let path = corner_path(size, radius, top_too);
+        // SAFETY: the buffer is h rows of w * 4 bytes and outlives the context.
+        let context = unsafe {
+            CGBitmapContextCreate(
+                pixels.as_mut_ptr().cast(),
+                w,
+                h,
+                8,
+                w * 4,
+                Some(&space),
+                CGImageAlphaInfo::PremultipliedLast.0,
+            )
+        }
+        .unwrap();
+        CGContext::set_rgb_fill_color(Some(&context), 0.0, 0.0, 0.0, 1.0);
+        CGContext::add_path(Some(&context), Some(&path));
+        CGContext::fill_path(Some(&context));
+        drop(context);
+        // The bitmap's first row is the top; flip to bottom-up.
+        let rows: Vec<_> = pixels
+            .chunks(w * 4)
+            .rev()
+            .flat_map(|row| row.iter().skip(3).step_by(4).copied())
+            .collect();
+        rows
+    }
+
+    #[test]
+    fn corners_cover_the_screen_edges_completely() {
+        let (w, h) = (120, 80);
+        let alpha = render(w, h, 12.0, false);
+        let at = |x: usize, y: usize| alpha[y * w + x];
+        for i in 0..6 {
+            assert_eq!(at(w - 1, i), 255, "right edge, row {i}");
+            assert_eq!(at(0, i), 255, "left edge, row {i}");
+            assert_eq!(
+                at(w - 1 - i, 0),
+                255,
+                "bottom edge near the right, column {i}"
+            );
+            assert_eq!(at(i, 0), 255, "bottom edge near the left, column {i}");
+        }
+        assert_eq!(at(w / 2, h / 2), 0, "the middle stays clear");
+        assert_eq!(
+            at(w - 1, h - 1),
+            0,
+            "top corners are left alone on the built-in screen"
+        );
+        assert_eq!(at(w / 2, 0), 0, "only the corners are masked");
+    }
+
+    #[test]
+    fn other_displays_get_all_four_corners() {
+        let (w, h) = (120, 80);
+        let alpha = render(w, h, 12.0, true);
+        assert_eq!(alpha[(h - 1) * w + (w - 1)], 255);
+        assert_eq!(alpha[(h - 1) * w], 255);
     }
 }

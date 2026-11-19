@@ -71,6 +71,8 @@ pub struct Gallery {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Folder {
     pub path: PathBuf,
+    /// obojeno's own library, where imported images go.
+    pub library: bool,
     pub items: Vec<Item>,
     /// Why the folder could not be read, if it could not.
     pub error: Option<String>,

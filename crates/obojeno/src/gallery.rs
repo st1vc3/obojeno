@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context as _;
 use image::codecs::jpeg::JpegEncoder;
 use obojeno_core::config::Config;
 use obojeno_core::gallery::{Fingerprint, Folder, Gallery, Index, IndexEntry, Item, scan};
@@ -63,19 +64,29 @@ pub fn build(
     };
 
     let recent: Vec<Item> = state.history.iter().filter_map(|h| item(&h.path)).collect();
-    let folders: Vec<Folder> = config
-        .wallpaper_dirs
-        .iter()
-        .map(|dir| {
-            let path = paths.dirs.expand(dir);
+    let library = library_dir(paths, config);
+    let library = library.canonicalize().unwrap_or(library);
+    let folders: Vec<Folder> = folder_paths(paths, config)
+        .into_iter()
+        .map(|path| {
+            let is_library = path == library;
             match scan(&path) {
                 Ok(images) => Folder {
                     items: images.iter().filter_map(|p| item(p)).collect(),
                     path,
+                    library: is_library,
+                    error: None,
+                },
+                // An empty library just has not been imported into yet.
+                Err(e) if is_library && e.kind() == std::io::ErrorKind::NotFound => Folder {
+                    path,
+                    library: true,
+                    items: Vec::new(),
                     error: None,
                 },
                 Err(e) => Folder {
                     path,
+                    library: is_library,
                     items: Vec::new(),
                     error: Some(folder_problem(&e)),
                 },
@@ -97,6 +108,91 @@ pub fn build(
         pending: missing.len(),
     };
     (gallery, missing)
+}
+
+pub fn library_dir(paths: &Paths, config: &Config) -> PathBuf {
+    paths.dirs.expand(&config.library)
+}
+
+/// The library, then the configured folders, without duplicates.
+/// Canonical, like the wallpaper paths macOS reports and history records
+/// (`/tmp` is really `/private/tmp`), so images compare equal to them.
+fn folder_paths(paths: &Paths, config: &Config) -> Vec<PathBuf> {
+    let canonical = |dir: PathBuf| dir.canonicalize().unwrap_or(dir);
+    let mut folders = vec![canonical(library_dir(paths, config))];
+    for dir in &config.wallpaper_dirs {
+        let dir = canonical(paths.dirs.expand(dir));
+        if !folders.contains(&dir) {
+            folders.push(dir);
+        }
+    }
+    folders
+}
+
+/// Every gallery image in display order, for next/previous/random.
+pub fn ordered_images(paths: &Paths, config: &Config) -> Vec<PathBuf> {
+    let mut images: Vec<PathBuf> = Vec::new();
+    for dir in folder_paths(paths, config) {
+        for image in scan(&dir).unwrap_or_default() {
+            if !images.contains(&image) {
+                images.push(image);
+            }
+        }
+    }
+    images
+}
+
+/// Copies images into the library, renaming on clashes ("name 2.jpg").
+/// Returns the new paths.
+pub fn import(paths: &Paths, config: &Config, images: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
+    let library = library_dir(paths, config);
+    std::fs::create_dir_all(&library).with_context(|| format!("creating {}", library.display()))?;
+    let mut imported = Vec::new();
+    for image in images {
+        imageio::cg_image(image)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("{} is not an image macOS can show", image.display()))?;
+        let target = free_name(&library, image)?;
+        std::fs::copy(image, &target).with_context(|| format!("copying {}", image.display()))?;
+        imported.push(target);
+    }
+    Ok(imported)
+}
+
+fn free_name(dir: &Path, image: &Path) -> anyhow::Result<PathBuf> {
+    let stem = image
+        .file_stem()
+        .context("image has no name")?
+        .to_string_lossy();
+    let ext = image
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    (1..)
+        .map(|n| match n {
+            1 => dir.join(format!("{stem}{ext}")),
+            n => dir.join(format!("{stem} {n}{ext}")),
+        })
+        .find(|p| !p.exists())
+        .context("no free name")
+}
+
+/// Moves a library image to the Trash. Images elsewhere are only shown by
+/// reference and are never touched.
+pub fn remove(paths: &Paths, config: &Config, image: &Path) -> anyhow::Result<()> {
+    let library = library_dir(paths, config)
+        .canonicalize()
+        .context("the library does not exist")?;
+    let image = image
+        .canonicalize()
+        .with_context(|| format!("{} does not exist", image.display()))?;
+    anyhow::ensure!(
+        image.parent() == Some(library.as_path()),
+        "{} is not in the library ({}); obojeno only removes images it imported",
+        image.display(),
+        library.display()
+    );
+    crate::macos::trash(&image)
 }
 
 /// Why a folder cannot be shown, phrased to follow "This folder".
@@ -184,4 +280,54 @@ pub fn build_blocking(
 /// machine sluggish.
 pub fn parallelism() -> usize {
     std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).max(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gallery_paths_are_canonical() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("a.png"), "").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let paths = Paths {
+            dirs: obojeno_core::output::Dirs {
+                home: dir.path().to_owned(),
+                cache: dir.path().join("cache"),
+                config: dir.path().join("config"),
+            },
+            config_file: dir.path().join("config.toml"),
+            state: dir.path().join("state"),
+        };
+        let config = Config {
+            library: link.display().to_string(),
+            ..Config::default()
+        };
+        let images = ordered_images(&paths, &config);
+        assert_eq!(images, [real.canonicalize().unwrap().join("a.png")]);
+    }
+
+    #[test]
+    fn free_names_never_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = Path::new("/elsewhere/Marble.jpg");
+        assert_eq!(
+            free_name(dir.path(), image).unwrap(),
+            dir.path().join("Marble.jpg")
+        );
+        std::fs::write(dir.path().join("Marble.jpg"), "").unwrap();
+        assert_eq!(
+            free_name(dir.path(), image).unwrap(),
+            dir.path().join("Marble 2.jpg")
+        );
+        std::fs::write(dir.path().join("Marble 2.jpg"), "").unwrap();
+        assert_eq!(
+            free_name(dir.path(), image).unwrap(),
+            dir.path().join("Marble 3.jpg")
+        );
+    }
 }

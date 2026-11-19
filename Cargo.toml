@@ -25,7 +25,7 @@ objc2-core-foundation = { version = "0.3.2", default-features = false, features 
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGBitmapContext", "CGColor", "CGColorSpace", "CGContext", "CGGeometry", "CGImage", "CGPath", "CGWindowLevel", "objc2"] }
 objc2-image-io = { version = "0.3.2", default-features = false, features = ["std", "CGImageSource", "objc2-core-graphics"] }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CAAnimation", "CALayer", "CAMediaTiming", "CAMediaTimingFunction", "CAShapeLayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSString", "NSURL", "NSUserDefaults", "NSDate", "NSGeometry", "NSRunLoop", "NSValue", "NSDistributedNotificationCenter", "NSNotification", "NSOperation", "block2"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSString", "NSFileManager", "NSURL", "NSUserDefaults", "NSDate", "NSGeometry", "NSRunLoop", "NSValue", "NSDistributedNotificationCenter", "NSNotification", "NSOperation", "block2"] }
 material-colors = { version = "0.5.0", features = ["quantize", "serde"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }

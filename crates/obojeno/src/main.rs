@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use obojeno_core::config::{Config, TransitionStyle};
-use obojeno_core::ipc::{ModeChange, Outcome, Reply, Report, Request};
+use obojeno_core::ipc::{Direction, ModeChange, Outcome, Reply, Report, Request};
 use obojeno_core::targets::{self, OutputKind};
 use obojeno_core::{Color, Mode, Palette, SchemeVariant, palette};
 
@@ -56,6 +56,17 @@ enum Command {
         /// Transition length in seconds [default: from the config]
         #[arg(long)]
         duration: Option<f64>,
+    },
+    /// Set the next image of the gallery as wallpaper
+    Next,
+    /// Set the previous image of the gallery as wallpaper
+    Previous,
+    /// Set a random image of the gallery as wallpaper
+    Random,
+    /// Copy images into the gallery's library
+    Import {
+        #[arg(required = true)]
+        images: Vec<PathBuf>,
     },
     /// Switch macOS to light or dark and theme everything for it
     Mode {
@@ -165,6 +176,40 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             },
         },
         Command::Color { color, .. } => Request::SetColor { color },
+        Command::Next => Request::Step {
+            direction: Direction::Next,
+        },
+        Command::Previous => Request::Step {
+            direction: Direction::Previous,
+        },
+        Command::Random => Request::Step {
+            direction: Direction::Random,
+        },
+        Command::Import { images } => {
+            let images = images
+                .iter()
+                .map(std::path::absolute)
+                .collect::<Result<Vec<_>, _>>()?;
+            let count = images.len();
+            match daemon::request(
+                &paths,
+                &Request::Import {
+                    paths: images.clone(),
+                },
+            )? {
+                Some(Reply::Error { message }) => anyhow::bail!(message),
+                Some(_) => {}
+                None => {
+                    let config = Config::load(&paths.config_file)?;
+                    gallery::import(&paths, &config, &images)?;
+                }
+            }
+            println!(
+                "Imported {count} image{} into the library.",
+                if count == 1 { "" } else { "s" }
+            );
+            return Ok(ExitCode::SUCCESS);
+        }
         Command::Service { action } => {
             run_service(action)?;
             return Ok(ExitCode::SUCCESS);

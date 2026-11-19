@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, bail};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSScreen, NSWorkspace};
-use objc2_foundation::{NSString, NSURL, NSUserDefaults, ns_string};
+use objc2_foundation::{NSFileManager, NSString, NSURL, NSUserDefaults, ns_string};
 use obojeno_core::Mode;
 
 fn main_thread() -> anyhow::Result<MainThreadMarker> {
@@ -59,6 +59,20 @@ pub fn system_mode() -> Mode {
     } else {
         Mode::Light
     }
+}
+
+/// Moves a file to the Trash, where the user can still restore it.
+pub fn trash(path: &Path) -> anyhow::Result<()> {
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&url, None)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "moving {} to the Trash: {}",
+                path.display(),
+                e.localizedDescription()
+            )
+        })
 }
 
 /// Switches macOS to light or dark. Goes through System Events, so macOS asks

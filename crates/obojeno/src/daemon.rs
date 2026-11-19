@@ -40,8 +40,11 @@ pub enum Job {
 /// Something that may have changed; the daemon checks and re-themes if so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
-    /// System Settings, a Space switch or a screen change.
+    /// The wallpaper was changed (System Settings, another tool).
     Wallpaper,
+    /// A Space switch or a screen change: the wallpaper on screen may be
+    /// another one.
+    Space,
     Appearance,
     Config,
 }
@@ -179,12 +182,26 @@ fn drain() {
 }
 
 fn handle(request: Request) -> Reply {
+    let paths = &daemon().paths;
     match request {
-        Request::State => return current_state().map_or_else(error, Reply::State),
+        Request::State => return current_state().map_or_else(error, |s| Reply::State(Box::new(s))),
         Request::Gallery => return gallery_now().map_or_else(error, Reply::Gallery),
+        Request::Import { paths: images } => {
+            return Config::load(&paths.config_file)
+                .map_err(anyhow::Error::from)
+                .and_then(|config| gallery::import(paths, &config, &images))
+                .and_then(|_| gallery_now())
+                .map_or_else(error, Reply::Gallery);
+        }
+        Request::Remove { path } => {
+            return Config::load(&paths.config_file)
+                .map_err(anyhow::Error::from)
+                .and_then(|config| gallery::remove(paths, &config, &path))
+                .and_then(|()| gallery_now())
+                .map_or_else(error, Reply::Gallery);
+        }
         _ => {}
     }
-    let paths = &daemon().paths;
     let result = actions::execute(paths, &request).and_then(|applied| {
         publish(&applied, &Config::load(&paths.config_file)?).map(|()| applied)
     });
@@ -200,6 +217,25 @@ fn error(e: anyhow::Error) -> Reply {
 
 fn handle_change(change: Change) -> anyhow::Result<()> {
     match change {
+        Change::Space => {
+            let config = Config::load(&daemon().paths.config_file)?;
+            let shown = macos::current_wallpaper()?;
+            let chosen = daemon()
+                .current
+                .lock()
+                .expect("state lock")
+                .clone()
+                .and_then(|s| (s.fixed_color.is_none()).then_some(s.wallpaper).flatten());
+            match chosen {
+                // macOS only changes the Space in view, so bring this one up
+                // to date now that it is visible.
+                Some(chosen) if config.all_spaces && chosen != shown => {
+                    tracing::info!("bringing this Space to {}", chosen.display());
+                    macos::set_wallpaper(&chosen)
+                }
+                _ => handle_change(Change::Wallpaper),
+            }
+        }
         Change::Wallpaper => {
             let path = macos::current_wallpaper()?;
             let current = daemon().current.lock().expect("state lock").clone();
@@ -247,7 +283,7 @@ fn publish(applied: &Applied, config: &Config) -> anyhow::Result<()> {
     *daemon().current.lock().expect("state lock") = Some(state.clone());
     *daemon().config_text.lock().expect("config lock") =
         std::fs::read_to_string(&daemon().paths.config_file).unwrap_or_default();
-    broadcast(&Reply::State(state));
+    broadcast(&Reply::State(Box::new(state)));
     Ok(())
 }
 
@@ -271,6 +307,9 @@ fn state_from(
         scheme: config.scheme,
         contrast: config.contrast,
         wallpaper_dirs: config.wallpaper_dirs.clone(),
+        all_spaces: config.all_spaces,
+        lid_animation: config.lid_animation,
+        finish: config.finish,
     })
 }
 
@@ -426,7 +465,7 @@ fn serve(stream: UnixStream) -> anyhow::Result<()> {
             .expect("subscribers lock")
             .push(tx);
         if let Ok(state) = current_state() {
-            send(&mut writer, &Reply::State(state))?;
+            send(&mut writer, &Reply::State(Box::new(state)))?;
         }
         for reply in rx {
             send(&mut writer, &reply)?;

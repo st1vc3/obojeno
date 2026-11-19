@@ -115,8 +115,8 @@ fn observe_notifications() -> Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>
     };
     vec![
         // Each Space can have its own wallpaper.
-        observe(&workspace_center, space, Change::Wallpaper),
-        observe(&app_center, screens, Change::Wallpaper),
+        observe(&workspace_center, space, Change::Space),
+        observe(&app_center, screens, Change::Space),
         // Posted after the switch, including the automatic one at sunset.
         observe(
             &distributed,

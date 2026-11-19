@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{ConfigChange, TransitionStyle};
+use crate::config::{ConfigChange, Finish, TransitionStyle};
 use crate::gallery::Gallery;
 use crate::{Color, Mode, Palette, SchemeVariant};
 
@@ -64,13 +64,33 @@ pub enum Request {
     Configure {
         change: ConfigChange,
     },
+    /// Copy images into the library; replies with the gallery.
+    Import {
+        paths: Vec<PathBuf>,
+    },
+    /// Move a library image to the Trash; replies with the gallery.
+    Remove {
+        path: PathBuf,
+    },
+    /// The next, previous or a random gallery image as wallpaper.
+    Step {
+        direction: Direction,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+    Next,
+    Previous,
+    Random,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "reply", rename_all = "snake_case")]
 pub enum Reply {
     Report(Report),
-    State(State),
+    State(Box<State>),
     Gallery(Gallery),
     Error { message: String },
 }
@@ -92,6 +112,9 @@ pub struct State {
     pub scheme: SchemeVariant,
     pub contrast: f64,
     pub wallpaper_dirs: Vec<String>,
+    pub all_spaces: bool,
+    pub lid_animation: bool,
+    pub finish: Finish,
 }
 
 /// What happened when theming.

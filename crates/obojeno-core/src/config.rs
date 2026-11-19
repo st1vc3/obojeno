@@ -15,10 +15,48 @@ pub struct Config {
     pub scheme: SchemeVariant,
     /// -1.0 (reduced) ..= 1.0 (high), 0.0 is the spec.
     pub contrast: f64,
-    /// Folders shown in the gallery.
+    /// Where images imported in the gallery are copied to. Always shown first.
+    pub library: String,
+    /// More folders shown in the gallery, by reference.
     pub wallpaper_dirs: Vec<String>,
     pub transition: Transition,
+    /// Keep the same wallpaper on every Space. macOS only lets apps change
+    /// the Space in view, so the others follow as they are visited.
+    pub all_spaces: bool,
+    /// Tip the wallpaper back, blur and darken it while the lid closes.
+    pub lid_animation: bool,
+    pub finish: Finish,
     pub targets: BTreeMap<String, TargetConfig>,
+}
+
+/// Touches drawn over the wallpaper.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Finish {
+    pub grain: Grain,
+    /// Rounds the wallpaper's corners by this many points: the bottom ones
+    /// on a MacBook's built-in screen (to match its rounded top), all four
+    /// elsewhere. 0 turns it off.
+    pub corner_radius: f64,
+}
+
+impl Default for Finish {
+    fn default() -> Self {
+        Self {
+            grain: Grain::Off,
+            corner_radius: 0.0,
+        }
+    }
+}
+
+/// Film grain over the wallpaper; softens banding in smooth gradients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Grain {
+    #[default]
+    Off,
+    Subtle,
+    Strong,
 }
 
 impl Default for Config {
@@ -26,8 +64,12 @@ impl Default for Config {
         Self {
             scheme: SchemeVariant::default(),
             contrast: 0.0,
-            wallpaper_dirs: vec!["~/Pictures/Wallpapers".to_owned()],
+            library: "~/Pictures/obojeno".to_owned(),
+            wallpaper_dirs: Vec::new(),
             transition: Transition::default(),
+            all_spaces: false,
+            lid_animation: false,
+            finish: Finish::default(),
             targets: BTreeMap::new(),
         }
     }
@@ -238,6 +280,10 @@ pub struct ConfigChange {
     pub transition: Option<TransitionStyle>,
     pub duration: Option<f64>,
     pub wallpaper_dirs: Option<Vec<String>>,
+    pub all_spaces: Option<bool>,
+    pub lid_animation: Option<bool>,
+    pub grain: Option<Grain>,
+    pub corner_radius: Option<f64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -270,6 +316,33 @@ pub fn edit(text: &str, change: &ConfigChange) -> Result<String, EditError> {
             &mut doc["wallpaper_dirs"],
             dirs.iter().map(String::as_str).collect::<Array>().into(),
         );
+    }
+    if let Some(all) = change.all_spaces {
+        set(&mut doc["all_spaces"], all.into());
+    }
+    if let Some(lid) = change.lid_animation {
+        set(&mut doc["lid_animation"], lid.into());
+    }
+    if change.grain.is_some() || change.corner_radius.is_some() {
+        if !doc.contains_table("finish") {
+            doc["finish"] = Item::Table(Table::new());
+        }
+        if let Some(grain) = change.grain {
+            let name = match grain {
+                Grain::Off => "off",
+                Grain::Subtle => "subtle",
+                Grain::Strong => "strong",
+            };
+            set(&mut doc["finish"]["grain"], name.into());
+        }
+        if let Some(radius) = change.corner_radius {
+            if !(0.0..=40.0).contains(&radius) {
+                return Err(EditError::Invalid(format!(
+                    "corner radius {radius} is outside 0..=40"
+                )));
+            }
+            set(&mut doc["finish"]["corner_radius"], radius.into());
+        }
     }
     if change.transition.is_some() || change.duration.is_some() {
         if !doc.contains_table("transition") {
@@ -339,6 +412,35 @@ mod tests {
         assert!((config.transition.duration - 1.2).abs() < f64::EPSILON);
         assert_eq!(config.wallpaper_dirs, ["~/Walls"]);
         assert!(config.targets.contains_key("kitty"));
+    }
+
+    #[test]
+    fn edits_finish_and_toggles() {
+        let edited = edit(
+            "",
+            &ConfigChange {
+                all_spaces: Some(true),
+                lid_animation: Some(true),
+                grain: Some(Grain::Subtle),
+                corner_radius: Some(18.0),
+                ..ConfigChange::default()
+            },
+        )
+        .unwrap();
+        let config = Config::parse(&edited).unwrap();
+        assert!(config.all_spaces && config.lid_animation);
+        assert_eq!(config.finish.grain, Grain::Subtle);
+        assert!((config.finish.corner_radius - 18.0).abs() < f64::EPSILON);
+        assert!(
+            edit(
+                "",
+                &ConfigChange {
+                    corner_radius: Some(99.0),
+                    ..ConfigChange::default()
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]

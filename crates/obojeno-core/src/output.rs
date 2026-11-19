@@ -343,8 +343,7 @@ mod tests {
             }
         }
         let borders = rendered.iter().find(|t| t.name == "borders").unwrap();
-        let primary = palette.role(Mode::Dark, "primary").hex_stripped();
-        assert_eq!(borders.reload[0][1], format!("active_color=0xff{primary}"));
+        assert_eq!(borders.reload[0][1], format!("active_color=0xff{}", palette.source.hex_stripped()));
         let obsidian = rendered.iter().find(|t| t.name == "obsidian").unwrap();
         assert_eq!(
             obsidian.files[0].path,

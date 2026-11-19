@@ -104,9 +104,11 @@ pub fn builtin(name: &str) -> Option<Target> {
         "borders" => target(
             vec![],
             // Called while borders is running, this updates the live instance.
+            // The vivid source color, not `primary`: Material's dark-mode
+            // primary is a pastel, and a border only needs to stand out.
             vec![cmd(&[
                 "borders",
-                "active_color=0xff{{colors.primary.default.hex_stripped}}",
+                "active_color=0xff{{source_color.hex_stripped}}",
             ])],
             vec![],
             "Nothing to do: obojeno updates the running borders instance.",

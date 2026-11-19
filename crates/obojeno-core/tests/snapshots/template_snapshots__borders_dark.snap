@@ -2,4 +2,4 @@
 source: crates/obojeno-core/tests/template_snapshots.rs
 expression: snapshot
 ---
-==> reload: ["borders", "active_color=0xffffb3b5"]
+==> reload: ["borders", "active_color=0xffe82649"]

@@ -4,13 +4,15 @@ mod macos;
 mod paths;
 mod reload;
 mod state;
+mod transition;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
-use obojeno_core::config::Config;
+use obojeno_core::config::{Config, TransitionStyle};
 use obojeno_core::targets::{self, OutputKind};
 use obojeno_core::{Color, Mode, Palette, SchemeVariant, palette};
 
@@ -49,6 +51,17 @@ enum Command {
         /// Theme for this mode instead of the system appearance
         #[arg(long)]
         mode: Option<Mode>,
+        /// fade, grow-circle, wipe or none [default: from the config]
+        #[arg(long)]
+        transition: Option<TransitionStyle>,
+        /// Transition length in seconds [default: from the config]
+        #[arg(long)]
+        duration: Option<f64>,
+    },
+    /// Switch macOS to light or dark and theme everything for it
+    Mode {
+        #[arg(value_enum)]
+        mode: ModeChoice,
     },
     /// Theme from a fixed color instead of the wallpaper
     Color {
@@ -70,6 +83,13 @@ enum Command {
     },
     /// List the built-in targets, or show how to set one up
     Targets { name: Option<String> },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ModeChoice {
+    Light,
+    Dark,
+    Toggle,
 }
 
 fn main() -> ExitCode {
@@ -102,17 +122,45 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let paths = Paths::from_env(cli.config.as_deref())?;
     match cli.command {
         Command::Apply { mode } => Ok(print_report(&apply::apply(&paths, mode, None)?, &paths)),
-        Command::Set { image, mode } => {
+        Command::Set {
+            image,
+            mode,
+            transition,
+            duration,
+        } => {
             let image = std::fs::canonicalize(&image)
                 .with_context(|| format!("{} does not exist", image.display()))?;
             // Fail before touching the desktop if it is not an image.
             imageio::decode(&image)
                 .map_err(anyhow::Error::msg)
                 .with_context(|| format!("{} is not a readable image", image.display()))?;
-            macos::set_wallpaper(&image)?;
+            let config = Config::load(&paths.config_file)?;
+            let duration = duration.unwrap_or(config.transition.duration);
+            let options = transition::Options {
+                style: transition.unwrap_or(config.transition.style),
+                duration: Duration::try_from_secs_f64(duration)
+                    .with_context(|| format!("invalid duration {duration}"))?,
+                origin: None,
+            };
             set_source(&paths, Source::Wallpaper)?;
+            let report = transition::set_wallpaper(&image, &options, || {
+                apply::apply(&paths, mode, Some(&image))
+            })??;
+            Ok(print_report(&report, &paths))
+        }
+        Command::Mode { mode } => {
+            let mode = match mode {
+                ModeChoice::Light => Mode::Light,
+                ModeChoice::Dark => Mode::Dark,
+                ModeChoice::Toggle => match macos::system_mode() {
+                    Mode::Light => Mode::Dark,
+                    Mode::Dark => Mode::Light,
+                },
+            };
+            macos::set_system_mode(mode)?;
+            // Pass the mode on: macOS reports the old one for a moment.
             Ok(print_report(
-                &apply::apply(&paths, mode, Some(&image))?,
+                &apply::apply(&paths, Some(mode), None)?,
                 &paths,
             ))
         }

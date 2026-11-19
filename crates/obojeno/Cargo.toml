@@ -24,6 +24,7 @@ objc2-core-foundation.workspace = true
 objc2-core-graphics.workspace = true
 objc2-foundation.workspace = true
 objc2-image-io.workspace = true
+objc2-quartz-core.workspace = true
 image.workspace = true
 unicode-normalization.workspace = true
 

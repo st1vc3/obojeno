@@ -43,6 +43,22 @@ pub enum TransitionStyle {
     None,
 }
 
+impl std::str::FromStr for TransitionStyle {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "fade" => Ok(Self::Fade),
+            "grow-circle" => Ok(Self::GrowCircle),
+            "wipe" => Ok(Self::Wipe),
+            "none" => Ok(Self::None),
+            _ => Err(format!(
+                "unknown transition {s:?}, expected fade, grow-circle, wipe or none"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Transition {

@@ -61,6 +61,32 @@ pub fn system_mode() -> Mode {
     }
 }
 
+/// Switches macOS to light or dark. Goes through System Events, so macOS asks
+/// once for permission to control it.
+pub fn set_system_mode(mode: Mode) -> anyhow::Result<()> {
+    let script = format!(
+        "tell application \"System Events\" to tell appearance preferences to set dark mode to {}",
+        mode.is_dark()
+    );
+    // Not the reload timeout: the first run waits for the user to answer
+    // the permission prompt.
+    let output = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .output()
+        .context("running osascript")?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("-1743") {
+        bail!(
+            "not allowed to switch the appearance. Allow it under System Settings > Privacy & Security > \
+             Automation (System Events)"
+        );
+    }
+    bail!("switching to {mode} mode failed: {}", stderr.trim());
+}
+
 /// Pids of this user's processes whose executable is named `name`.
 pub fn pids_named(name: &str) -> anyhow::Result<Vec<c_int>> {
     // SAFETY: a null buffer asks for the number of pids.

@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use image::{DynamicImage, RgbaImage};
-use objc2_core_foundation::{CFString, CFURL, CFURLPathStyle, CGPoint, CGRect, CGSize};
+use objc2_core_foundation::{CFRetained, CFString, CFURL, CFURLPathStyle, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
     CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo,
     CGImageByteOrderInfo, kCGColorSpaceSRGB,
@@ -20,7 +20,8 @@ pub fn decode(path: &Path) -> Result<DynamicImage, String> {
     })
 }
 
-fn decode_with_imageio(path: &Path) -> Result<DynamicImage, String> {
+/// The image as macOS decodes it, for drawing with Core Graphics.
+pub fn cg_image(path: &Path) -> Result<CFRetained<CGImage>, String> {
     let not_readable = || "macOS cannot read it as an image".to_owned();
     let cf_path = CFString::from_str(&path.to_string_lossy());
     let url = CFURL::with_file_system_path(
@@ -31,12 +32,17 @@ fn decode_with_imageio(path: &Path) -> Result<DynamicImage, String> {
     )
     .ok_or_else(not_readable)?;
     // SAFETY: no options dictionaries are passed.
-    let image = unsafe {
+    unsafe {
         let source = CGImageSource::with_url(&url, None).ok_or_else(not_readable)?;
         source
             .image_at_index(source.primary_image_index(), None)
-            .ok_or_else(not_readable)?
-    };
+            .ok_or_else(not_readable)
+    }
+}
+
+fn decode_with_imageio(path: &Path) -> Result<DynamicImage, String> {
+    let not_readable = || "macOS cannot read it as an image".to_owned();
+    let image = cg_image(path)?;
     let (width, height) = (CGImage::width(Some(&image)), CGImage::height(Some(&image)));
     if width == 0 || height == 0 {
         return Err(not_readable());

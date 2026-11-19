@@ -17,6 +17,8 @@ use crate::state::{Source, State};
 #[derive(Debug)]
 pub struct TargetReport {
     pub name: String,
+    /// Whether the target has files at all (borders only reloads).
+    pub has_files: bool,
     pub written: Vec<PathBuf>,
     pub reload: Option<Outcome>,
     pub error: Option<String>,
@@ -128,6 +130,7 @@ fn render_and_write(
     for resolved in &targets {
         let mut report = TargetReport {
             name: resolved.target.name.clone(),
+            has_files: !resolved.target.outputs.is_empty(),
             written: Vec::new(),
             reload: None,
             error: None,

@@ -187,20 +187,26 @@ fn print_report(report: &Report, paths: &Paths) -> ExitCode {
             format!("error: {error}")
         } else {
             let files = match t.written.len() {
-                0 => "unchanged".to_owned(),
-                1 => "1 file written".to_owned(),
-                n => format!("{n} files written"),
+                _ if !t.has_files => None,
+                0 => Some("unchanged".to_owned()),
+                1 => Some("1 file written".to_owned()),
+                n => Some(format!("{n} files written")),
             };
-            match &t.reload {
-                None => files,
-                Some(Outcome::Done) => format!("{files}, reloaded"),
-                Some(Outcome::NotRunning) => format!("{files}, not running"),
-                Some(Outcome::NotInstalled(cmd)) => format!("{files}, {cmd} not installed"),
+            let reload = match &t.reload {
+                None => None,
+                Some(Outcome::Done) => Some("reloaded".to_owned()),
+                Some(Outcome::NotRunning) => Some("not running".to_owned()),
+                Some(Outcome::NotInstalled(cmd)) => Some(format!("{cmd} not installed")),
                 Some(Outcome::Failed(e)) => {
                     failed = true;
-                    format!("{files}, reload failed: {e}")
+                    Some(format!("reload failed: {e}"))
                 }
-            }
+            };
+            [files, reload]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         println!("  {:width$}  {status}", t.name);
     }

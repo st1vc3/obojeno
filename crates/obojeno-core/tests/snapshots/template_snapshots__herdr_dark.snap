@@ -23,4 +23,5 @@ yellow = "#e7a437"
 blue = "#a0aaff"
 teal = "#33c0db"
 peach = "#ffc166"
-==> reload: ["herdr", "server", "reload-config"]
+==> reload: Command(["herdr", "server", "reload-config"])
+==> only if running: herdr

@@ -15,6 +15,10 @@ anyhow = "1.0.104"
 clap = { version = "4.6.8", features = ["derive"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 insta = "1.49.0"
+libc = "0.2"
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSWorkspace", "NSScreen"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSString", "NSURL", "NSUserDefaults"] }
 material-colors = { version = "0.5.0", features = ["quantize", "serde"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
@@ -24,6 +28,7 @@ thiserror = "2.0.21"
 toml = "1.2.1"
 toml_edit = "0.25.19"
 tracing = "0.1.44"
+unicode-normalization = "0.1.26"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 upon = { version = "0.11.0", features = ["serde", "functions"] }
 

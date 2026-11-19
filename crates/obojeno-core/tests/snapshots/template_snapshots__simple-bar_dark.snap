@@ -27,4 +27,7 @@ expression: snapshot
 }
 ==> /home/.cache/obojeno/wallpaper-blur.jpg
 <13283 bytes>
-==> reload: ["osascript", "-e", "tell application id \"tracesOf.Uebersicht\" to refresh widget id \"simple-bar-index-jsx\""]
+==> /home/.cache/obojeno/wallpaper-blur.jpg.source
+key
+==> reload: Command(["osascript", "-e", "tell application id \"tracesOf.Uebersicht\" to refresh widget id \"simple-bar-index-jsx\""])
+==> only if running: Übersicht

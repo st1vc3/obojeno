@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::palette::SchemeVariant;
-use crate::targets::{self, Output, OutputKind, Target};
+use crate::targets::{self, Output, OutputKind, Reload, Target};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -71,6 +71,8 @@ pub struct TargetConfig {
     pub output: Option<String>,
     /// Replaces the reload commands; `[]` disables reloading.
     pub reload: Option<Vec<Vec<String>>>,
+    /// Only reload while a process with this executable name runs.
+    pub only_if_running: Option<String>,
     /// Target specific options, e.g. `vault` for obsidian.
     #[serde(flatten)]
     pub options: BTreeMap<String, String>,
@@ -78,15 +80,15 @@ pub struct TargetConfig {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("reading {path}: {source}")]
+    #[error("reading {path}: {error}")]
     Read {
         path: PathBuf,
-        source: std::io::Error,
+        error: std::io::Error,
     },
-    #[error("{path}: {source}")]
+    #[error("{path}: {error}")]
     Parse {
         path: PathBuf,
-        source: Box<toml::de::Error>,
+        error: Box<toml::de::Error>,
     },
     #[error("target {target}: {message}")]
     Target { target: String, message: String },
@@ -104,14 +106,14 @@ impl Config {
     /// Loads the config, or the defaults when the file does not exist.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         match std::fs::read_to_string(path) {
-            Ok(text) => Self::parse(&text).map_err(|source| ConfigError::Parse {
+            Ok(text) => Self::parse(&text).map_err(|error| ConfigError::Parse {
                 path: path.to_owned(),
-                source: Box::new(source),
+                error: Box::new(error),
             }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(source) => Err(ConfigError::Read {
+            Err(error) => Err(ConfigError::Read {
                 path: path.to_owned(),
-                source,
+                error,
             }),
         }
     }
@@ -165,21 +167,21 @@ impl Config {
                         )));
                     };
                     Target {
-                        name: name.clone(),
                         outputs: vec![Output {
                             path: output.clone(),
                             kind: OutputKind::Text {
                                 template: Cow::Owned(template),
                             },
                         }],
-                        reload: vec![],
-                        options: vec![],
-                        setup: "",
+                        ..Target::custom(name)
                     }
                 }
             };
             if let Some(reload) = &cfg.reload {
-                target.reload.clone_from(reload);
+                target.reload = reload.iter().cloned().map(Reload::Command).collect();
+            }
+            if let Some(process) = &cfg.only_if_running {
+                target.only_if_running = Some(process.clone());
             }
 
             let mut options = BTreeMap::new();
@@ -297,7 +299,10 @@ mod tests {
         .unwrap();
         let t = c.resolve_targets(|_| Ok("{{mode}}".to_owned())).unwrap();
         assert_eq!(t[0].target.outputs[0].path, "/tmp/x");
-        assert_eq!(t[0].target.reload, vec![vec!["true".to_owned()]]);
+        assert_eq!(
+            t[0].target.reload,
+            vec![Reload::Command(vec!["true".to_owned()])]
+        );
     }
 
     #[test]

@@ -1,0 +1,135 @@
+//! The bits of macOS obojeno talks to: wallpaper, appearance and processes.
+
+use std::ffi::{CStr, c_int};
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context as _, bail};
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSScreen, NSWorkspace};
+use objc2_foundation::{NSString, NSURL, NSUserDefaults, ns_string};
+use obojeno_core::Mode;
+
+fn main_thread() -> anyhow::Result<MainThreadMarker> {
+    MainThreadMarker::new().context("AppKit calls must run on the main thread")
+}
+
+/// The wallpaper of the main screen's current Space.
+pub fn current_wallpaper() -> anyhow::Result<PathBuf> {
+    let mtm = main_thread()?;
+    let screen = NSScreen::mainScreen(mtm).context("no screen attached")?;
+    let url = NSWorkspace::sharedWorkspace()
+        .desktopImageURLForScreen(&screen)
+        .context("macOS reports no wallpaper for the main screen")?;
+    let path = url.path().context("the wallpaper is not a local file")?;
+    Ok(PathBuf::from(path.to_string()))
+}
+
+/// Sets the wallpaper on every screen, keeping each screen's scaling options.
+pub fn set_wallpaper(path: &Path) -> anyhow::Result<()> {
+    let mtm = main_thread()?;
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("{} does not exist", path.display()))?;
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    let workspace = NSWorkspace::sharedWorkspace();
+    for screen in NSScreen::screens(mtm) {
+        let options = workspace
+            .desktopImageOptionsForScreen(&screen)
+            .unwrap_or_default();
+        // SAFETY: the options come from AppKit itself for this screen.
+        unsafe { workspace.setDesktopImageURL_forScreen_options_error(&url, &screen, &options) }
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "setting the wallpaper on {}: {}",
+                    screen.localizedName(),
+                    e.localizedDescription()
+                )
+            })?;
+    }
+    Ok(())
+}
+
+/// The appearance macOS currently shows. Also correct in Auto mode, where
+/// macOS keeps `AppleInterfaceStyle` in sync with what is on screen.
+pub fn system_mode() -> Mode {
+    let style =
+        NSUserDefaults::standardUserDefaults().stringForKey(ns_string!("AppleInterfaceStyle"));
+    if style.is_some_and(|s| s.to_string().eq_ignore_ascii_case("dark")) {
+        Mode::Dark
+    } else {
+        Mode::Light
+    }
+}
+
+/// Pids of this user's processes whose executable is named `name`.
+pub fn pids_named(name: &str) -> anyhow::Result<Vec<c_int>> {
+    // SAFETY: a null buffer asks for the number of pids.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if count <= 0 {
+        bail!("listing processes failed");
+    }
+    // Leave room for processes started between the two calls.
+    let mut pids: Vec<c_int> = vec![0; usize::try_from(count)? + 64];
+    let bytes = c_int::try_from(pids.len() * size_of::<c_int>())?;
+    // SAFETY: the buffer is `bytes` long.
+    let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    if count <= 0 {
+        bail!("listing processes failed");
+    }
+    pids.truncate(usize::try_from(count)?);
+
+    let mut path = vec![0u8; usize::try_from(libc::PROC_PIDPATHINFO_MAXSIZE)?];
+    let path_len = u32::try_from(path.len())?;
+    Ok(pids
+        .into_iter()
+        .filter(|&pid| {
+            // SAFETY: the buffer is `path_len` long; on success it holds a
+            // NUL-terminated path. Fails for other users' processes.
+            let n = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path_len) };
+            n > 0
+                && CStr::from_bytes_until_nul(&path)
+                    .ok()
+                    .and_then(|p| {
+                        Path::new(&*p.to_string_lossy())
+                            .file_name()
+                            .map(|f| same_name(&f.to_string_lossy(), name))
+                    })
+                    .unwrap_or(false)
+        })
+        .collect())
+}
+
+/// File names on macOS are stored decomposed (NFD: `U` + combining
+/// diaeresis for `Ü`), while names typed in code are usually composed.
+fn same_name(a: &str, b: &str) -> bool {
+    use unicode_normalization::UnicodeNormalization;
+    a.nfc().eq(b.nfc())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_compare_across_unicode_normalization() {
+        assert!(same_name("U\u{308}bersicht", "\u{dc}bersicht"));
+        assert!(same_name("kitty", "kitty"));
+        assert!(!same_name("kitty", "kitten"));
+    }
+
+    #[test]
+    fn finds_own_process() {
+        let exe = std::env::current_exe().unwrap();
+        let name = exe.file_name().unwrap().to_str().unwrap();
+        let pids = pids_named(name).unwrap();
+        assert!(
+            pids.contains(&c_int::try_from(std::process::id()).unwrap()),
+            "{pids:?}"
+        );
+        assert!(
+            pids_named("surely-no-process-has-this-name")
+                .unwrap()
+                .is_empty()
+        );
+    }
+}

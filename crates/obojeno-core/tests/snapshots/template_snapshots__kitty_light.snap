@@ -45,4 +45,4 @@ color12 #3946a5
 color13 #8b266f
 color14 #065966
 color15 #221919
-==> reload: ["pkill", "-USR1", "-x", "kitty"]
+==> reload: Signal { process: "kitty", signal: Usr1 }

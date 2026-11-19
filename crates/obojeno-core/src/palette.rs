@@ -134,6 +134,22 @@ impl fmt::Display for Mode {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("unknown mode {0:?}, expected light or dark")]
+pub struct ParseModeError(String);
+
+impl FromStr for Mode {
+    type Err = ParseModeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "light" => Ok(Self::Light),
+            "dark" => Ok(Self::Dark),
+            _ => Err(ParseModeError(s.to_owned())),
+        }
+    }
+}
+
 /// Material color roles (`primary`, `on_surface`, ...) for one mode.
 pub type Roles = BTreeMap<String, Color>;
 

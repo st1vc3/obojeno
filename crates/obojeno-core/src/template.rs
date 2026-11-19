@@ -147,33 +147,26 @@ impl Context {
     }
 }
 
-pub struct Renderer {
-    engine: upon::Engine<'static>,
-}
-
-impl Default for Renderer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// Renders templates. Each render gets a fresh engine so errors can name the
+/// template they come from; engines are cheap to make.
+#[derive(Debug, Default)]
+pub struct Renderer;
 
 impl Renderer {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// `name` labels the template in error messages, e.g. its file path.
+    pub fn render(&self, name: &str, source: &str, ctx: &Context) -> Result<String, TemplateError> {
         let mut engine = upon::Engine::new();
         engine.add_function("upper", |s: &str| s.to_uppercase());
         engine.add_function("lower", |s: &str| s.to_lowercase());
         engine.add_function("replace", |s: &str, from: &str, to: &str| {
             s.replace(from, to)
         });
-        Self { engine }
-    }
-
-    pub fn render(&self, source: &str, ctx: &Context) -> Result<String, TemplateError> {
-        Ok(self
-            .engine
-            .compile(source)?
-            .render(&self.engine, ctx)
-            .to_string()?)
+        engine.add_template(name.to_owned(), source.to_owned())?;
+        Ok(engine.template(name).render(ctx).to_string()?)
     }
 }
 
@@ -194,6 +187,7 @@ mod tests {
         let p = Palette::from_source(Color::new(0xff, 0x40, 0x57), SchemeVariant::TonalSpot, 0.0);
         let out = r
             .render(
+                "test",
                 "{{colors.primary.default.hex}} {{colors.primary.light.hex_stripped}} {{mode}} {{wallpaper}}",
                 &ctx(Mode::Dark),
             )
@@ -210,10 +204,10 @@ mod tests {
     fn default_follows_mode() {
         let r = Renderer::new();
         let src = "{{colors.surface.default.hex}}={{colors.surface.light.hex}}";
-        let light = r.render(src, &ctx(Mode::Light)).unwrap();
+        let light = r.render("test", src, &ctx(Mode::Light)).unwrap();
         let (a, b) = light.split_once('=').unwrap();
         assert_eq!(a, b);
-        let dark = r.render(src, &ctx(Mode::Dark)).unwrap();
+        let dark = r.render("test", src, &ctx(Mode::Dark)).unwrap();
         let (a, b) = dark.split_once('=').unwrap();
         assert_ne!(a, b);
     }
@@ -239,7 +233,7 @@ mod tests {
         let r = Renderer::new();
         let c = ctx(Mode::Dark).with_vars([("vault", "/notes")]);
         let out = r
-            .render("{{term.color1.default.hex}} {{vault}}", &c)
+            .render("test", "{{term.color1.default.hex}} {{vault}}", &c)
             .unwrap();
         assert!(out.starts_with('#') && out.ends_with(" /notes"), "{out}");
     }
@@ -249,6 +243,7 @@ mod tests {
         let r = Renderer::new();
         let out = r
             .render(
+                "test",
                 "{{ colors.primary.default.hex | upper | replace: \"#\", \"0xff\" }}",
                 &ctx(Mode::Dark),
             )
@@ -262,8 +257,12 @@ mod tests {
     #[test]
     fn unknown_variable_is_an_error_with_location() {
         let err = Renderer::new()
-            .render("x {{colors.primray.default.hex}}", &ctx(Mode::Dark))
+            .render("test", "x {{colors.primray.default.hex}}", &ctx(Mode::Dark))
             .unwrap_err();
         assert!(err.to_string().contains("primray"), "{err}");
+        assert!(
+            err.to_string().contains("test"),
+            "names the template: {err}"
+        );
     }
 }

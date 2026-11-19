@@ -1,15 +1,17 @@
 //! Rendering targets and writing their files.
 
-use std::io::{Cursor, Write};
+use std::cell::OnceCell;
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 
 use image::DynamicImage;
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
+use sha2::{Digest, Sha256};
 
 use crate::config::ResolvedTarget;
 use crate::palette::{Mode, Palette};
-use crate::targets::{MergeFormat, OutputKind};
+use crate::targets::{MergeFormat, OutputKind, Reload};
 use crate::template::{Context, Renderer, TemplateError};
 
 /// Where `~`, `{{home}}`, `{{cache}}` and `{{config}}` point.
@@ -33,17 +35,70 @@ impl Dirs {
     }
 }
 
-pub struct Wallpaper<'a> {
-    pub path: &'a Path,
-    pub image: &'a DynamicImage,
+/// The current wallpaper. Its pixels are decoded on first use only, since
+/// most applies never need them.
+pub struct Wallpaper {
+    pub path: PathBuf,
+    /// SHA-256 of the file contents. Outputs made from the pixels record it
+    /// and are skipped while it stays the same.
+    pub key: String,
+    image: OnceCell<Result<DynamicImage, String>>,
+}
+
+impl Wallpaper {
+    /// Hashes the file; decoding happens lazily in [`Self::image`].
+    pub fn open(path: &Path) -> std::io::Result<Self> {
+        let mut file = std::fs::File::open(path)?;
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0; 1 << 16];
+        loop {
+            match file.read(&mut buf)? {
+                0 => break,
+                n => hasher.update(&buf[..n]),
+            }
+        }
+        Ok(Self {
+            path: path.to_owned(),
+            key: hex(&hasher.finalize()),
+            image: OnceCell::new(),
+        })
+    }
+
+    /// A wallpaper whose image is already decoded.
+    pub fn with_image(path: &Path, key: &str, image: DynamicImage) -> Self {
+        Self {
+            path: path.to_owned(),
+            key: key.to_owned(),
+            image: OnceCell::from(Ok(image)),
+        }
+    }
+
+    pub fn image(&self) -> Result<&DynamicImage, &str> {
+        self.image
+            .get_or_init(|| crate::palette::open_image(&self.path).map_err(|e| e.to_string()))
+            .as_ref()
+            .map_err(String::as_str)
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The file next to a pixel-derived output that records which wallpaper it
+/// was made from.
+fn source_marker(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_owned();
+    name.push(".source");
+    path.with_file_name(name)
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum OutputError {
-    #[error("{target}: template: {source}")]
+    #[error("{target}: template: {error}")]
     Template {
         target: String,
-        source: TemplateError,
+        error: TemplateError,
     },
     #[error("{target}: {path}: {message}")]
     File {
@@ -63,21 +118,23 @@ pub struct RenderedFile {
 pub struct RenderedTarget {
     pub name: String,
     pub files: Vec<RenderedFile>,
-    pub reload: Vec<Vec<String>>,
+    /// Commands with their arguments rendered.
+    pub reload: Vec<Reload>,
+    pub only_if_running: Option<String>,
 }
 
 pub fn render_target(
     resolved: &ResolvedTarget,
     palette: &Palette,
     mode: Mode,
-    wallpaper: Option<&Wallpaper<'_>>,
+    wallpaper: Option<&Wallpaper>,
     dirs: &Dirs,
     renderer: &Renderer,
 ) -> Result<RenderedTarget, OutputError> {
     let name = &resolved.target.name;
-    let template_err = |source| OutputError::Template {
+    let template_err = |error| OutputError::Template {
         target: name.clone(),
-        source,
+        error,
     };
     let home = dirs.home.display().to_string();
     let cache = dirs.cache.display().to_string();
@@ -88,7 +145,7 @@ pub fn render_target(
         .iter()
         .map(|(k, v)| (k.clone(), dirs.expand(v).display().to_string()))
         .collect();
-    let ctx = Context::new(palette, mode, wallpaper.map(|w| w.path)).with_vars(
+    let ctx = Context::new(palette, mode, wallpaper.map(|w| w.path.as_path())).with_vars(
         [
             ("home", home.as_str()),
             ("cache", cache.as_str()),
@@ -97,26 +154,30 @@ pub fn render_target(
         .into_iter()
         .chain(options.iter().map(|(k, v)| (k.as_str(), v.as_str()))),
     );
-    let render = |source: &str| renderer.render(source, &ctx).map_err(template_err);
+    let render = |what: &str, source: &str| {
+        renderer
+            .render(&format!("{name} {what}"), source, &ctx)
+            .map_err(template_err)
+    };
 
     let mut files = Vec::new();
     for output in &resolved.target.outputs {
-        let path = dirs.expand(&render(&output.path)?);
+        let path = dirs.expand(&render("output path", &output.path)?);
         let file_err = |message: String| OutputError::File {
             target: name.clone(),
             path: path.clone(),
             message,
         };
         let contents = match &output.kind {
-            OutputKind::Text { template } => render(template)?.into_bytes(),
+            OutputKind::Text { template } => render("template", template)?.into_bytes(),
             OutputKind::Merge {
                 format,
                 template,
                 base,
             } => {
-                let overlay = render(template)?;
+                let overlay = render("template", template)?;
                 let base_path = match base {
-                    Some(b) => dirs.expand(&render(b)?),
+                    Some(b) => dirs.expand(&render("base path", b)?),
                     None => path.clone(),
                 };
                 let base_text = match std::fs::read_to_string(&base_path) {
@@ -136,8 +197,27 @@ pub fn render_target(
                 quality,
             } => {
                 let Some(wallpaper) = wallpaper else { continue };
-                blurred_jpeg(wallpaper.image, *width, *sigma, *quality)
-                    .map_err(|e| file_err(e.to_string()))?
+                let marker = source_marker(&path);
+                if path.exists()
+                    && std::fs::read_to_string(&marker).is_ok_and(|k| k == wallpaper.key)
+                {
+                    continue;
+                }
+                let image = wallpaper
+                    .image()
+                    .map_err(|e| file_err(format!("decoding {}: {e}", wallpaper.path.display())))?;
+                let jpeg = blurred_jpeg(image, *width, *sigma, *quality)
+                    .map_err(|e| file_err(e.to_string()))?;
+                files.push(RenderedFile {
+                    path,
+                    contents: jpeg,
+                });
+                // Written after the image, so a crash in between re-renders.
+                files.push(RenderedFile {
+                    path: marker,
+                    contents: wallpaper.key.clone().into_bytes(),
+                });
+                continue;
             }
         };
         files.push(RenderedFile { path, contents });
@@ -147,10 +227,13 @@ pub fn render_target(
         .target
         .reload
         .iter()
-        .map(|args| {
-            args.iter()
-                .map(|a| render(a))
+        .map(|reload| match reload {
+            Reload::Command(args) => args
+                .iter()
+                .map(|a| render("reload command", a))
                 .collect::<Result<Vec<_>, _>>()
+                .map(Reload::Command),
+            Reload::Signal { .. } => Ok(reload.clone()),
         })
         .collect::<Result<_, _>>()?;
 
@@ -158,6 +241,7 @@ pub fn render_target(
         name: name.clone(),
         files,
         reload,
+        only_if_running: resolved.target.only_if_running.clone(),
     })
 }
 
@@ -287,7 +371,7 @@ mod tests {
         config: &str,
         dirs: &Dirs,
         palette: &Palette,
-        wallpaper: Option<&Wallpaper<'_>>,
+        wallpaper: Option<&Wallpaper>,
     ) -> Vec<RenderedTarget> {
         Config::parse(config)
             .unwrap()
@@ -312,11 +396,8 @@ mod tests {
     #[test]
     fn every_builtin_renders() {
         let (tmp, dirs, palette) = setup();
-        let image = DynamicImage::new_rgb8(64, 40);
-        let wallpaper = Wallpaper {
-            path: Path::new("/w.jpg"),
-            image: &image,
-        };
+        let wallpaper =
+            Wallpaper::with_image(Path::new("/w.jpg"), "k1", DynamicImage::new_rgb8(64, 40));
         let config = format!(
             "[targets.kitty]\n[targets.borders]\n[targets.simple-bar]\n[targets.nvim]\n[targets.starship]\n[targets.herdr]\n\
              [targets.obsidian]\nvault = \"~/Notes\"\n[targets.zen]\nprofile = \"{}/zen\"\n",
@@ -343,7 +424,13 @@ mod tests {
             }
         }
         let borders = rendered.iter().find(|t| t.name == "borders").unwrap();
-        assert_eq!(borders.reload[0][1], format!("active_color=0xff{}", palette.source.hex_stripped()));
+        let Reload::Command(args) = &borders.reload[0] else {
+            panic!("borders reloads with a command")
+        };
+        assert_eq!(
+            args[1],
+            format!("active_color=0xff{}", palette.source.hex_stripped())
+        );
         let obsidian = rendered.iter().find(|t| t.name == "obsidian").unwrap();
         assert_eq!(
             obsidian.files[0].path,
@@ -377,6 +464,63 @@ mod tests {
         let (_tmp, dirs, palette) = setup();
         let rendered = render("[targets.simple-bar]", &dirs, &palette, None);
         assert_eq!(rendered[0].files.len(), 1);
+    }
+
+    #[test]
+    fn blurred_wallpaper_is_only_rendered_when_the_wallpaper_changes() {
+        let (_tmp, dirs, palette) = setup();
+        let write_all = |rendered: &[RenderedTarget]| {
+            for f in &rendered[0].files {
+                write_if_changed(&f.path, &f.contents).unwrap();
+            }
+        };
+        let blur_files = |rendered: &[RenderedTarget]| {
+            rendered[0]
+                .files
+                .iter()
+                .filter(|f| !f.path.ends_with(".simplebarrc"))
+                .count()
+        };
+        let first =
+            Wallpaper::with_image(Path::new("/a.jpg"), "aaa", DynamicImage::new_rgb8(32, 18));
+        let rendered = render("[targets.simple-bar]", &dirs, &palette, Some(&first));
+        assert_eq!(blur_files(&rendered), 2, "image and marker");
+        write_all(&rendered);
+
+        // Same wallpaper: nothing to decode or write.
+        // Decoding this one would fail, proving it is never decoded.
+        let same = Wallpaper {
+            path: "/nonexistent.jpg".into(),
+            key: "aaa".to_owned(),
+            image: OnceCell::new(),
+        };
+        let rendered = render("[targets.simple-bar]", &dirs, &palette, Some(&same));
+        assert_eq!(blur_files(&rendered), 0);
+
+        let second =
+            Wallpaper::with_image(Path::new("/b.jpg"), "bbb", DynamicImage::new_rgb8(32, 18));
+        assert_eq!(
+            blur_files(&render(
+                "[targets.simple-bar]",
+                &dirs,
+                &palette,
+                Some(&second)
+            )),
+            2
+        );
+    }
+
+    #[test]
+    fn wallpaper_key_is_the_content_hash() {
+        let (tmp, ..) = setup();
+        let path = tmp.path().join("w.bin");
+        std::fs::write(&path, b"abc").unwrap();
+        let w = Wallpaper::open(&path).unwrap();
+        assert_eq!(
+            w.key,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert!(w.image().is_err(), "not an image");
     }
 
     #[test]

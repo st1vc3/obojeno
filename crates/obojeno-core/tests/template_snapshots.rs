@@ -16,11 +16,11 @@ fn builtin_targets() {
         config: "/home/.config/obojeno".into(),
     };
     let palette = Palette::from_source(Color::new(0xe8, 0x26, 0x49), SchemeVariant::TonalSpot, 0.0);
-    let image = image::DynamicImage::new_rgb8(16, 9);
-    let wallpaper = Wallpaper {
-        path: Path::new("/walls/red.jpg"),
-        image: &image,
-    };
+    let wallpaper = Wallpaper::with_image(
+        Path::new("/walls/red.jpg"),
+        "key",
+        image::DynamicImage::new_rgb8(16, 9),
+    );
     let config = Config::parse(
         "[targets.kitty]\n[targets.borders]\n[targets.simple-bar]\n[targets.nvim]\n\
          [targets.starship]\nbase = \"/nonexistent\"\n[targets.herdr]\nbase = \"/nonexistent\"\n\
@@ -44,13 +44,19 @@ fn builtin_targets() {
                 snapshot.push_str(&format!("==> {}\n", file.path.display()));
                 match std::str::from_utf8(&file.contents) {
                     Ok(text) if file.path.extension().is_none_or(|e| e != "jpg") => {
-                        snapshot.push_str(text)
+                        snapshot.push_str(text);
+                        if !text.ends_with('\n') {
+                            snapshot.push('\n');
+                        }
                     }
                     _ => snapshot.push_str(&format!("<{} bytes>\n", file.contents.len())),
                 }
             }
-            for cmd in &rendered.reload {
-                snapshot.push_str(&format!("==> reload: {cmd:?}\n"));
+            for reload in &rendered.reload {
+                snapshot.push_str(&format!("==> reload: {reload:?}\n"));
+            }
+            if let Some(process) = &rendered.only_if_running {
+                snapshot.push_str(&format!("==> only if running: {process}\n"));
             }
             insta::assert_snapshot!(format!("{}_{mode}", rendered.name), snapshot);
         }

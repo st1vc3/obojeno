@@ -1,0 +1,5 @@
+/target
+/result
+/app/.build
+*.snap.new
+.DS_Store

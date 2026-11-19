@@ -198,6 +198,15 @@ fn handle(request: Request) -> Reply {
                 .and_then(|_| gallery_now())
                 .map_or_else(error, Reply::Gallery);
         }
+        Request::LidPreview { percent } => {
+            return match MainThreadMarker::new() {
+                Some(mtm) => {
+                    desktop::preview_lid(percent, mtm);
+                    current_state().map_or_else(error, |s| Reply::State(Box::new(s)))
+                }
+                None => error(anyhow::anyhow!("not on the main thread")),
+            };
+        }
         Request::Remove { path } => {
             return Config::load(&paths.config_file)
                 .map_err(anyhow::Error::from)

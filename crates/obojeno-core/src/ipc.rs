@@ -76,6 +76,11 @@ pub enum Request {
     Step {
         direction: Direction,
     },
+    /// Show the lid animation at `percent` (0 open, 100 shut), for tuning it
+    /// with the lid open; `null` follows the sensor again.
+    LidPreview {
+        percent: Option<u16>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

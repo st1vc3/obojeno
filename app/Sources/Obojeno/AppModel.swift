@@ -50,13 +50,18 @@ final class AppModel {
     private(set) var openAtLogin = SMAppService.mainApp.status == .enabled
 
     let shortcuts = Shortcuts()
+    private let hint = ShortcutHint()
 
     private let client = DaemonClient()
     private var subscription: Task<Void, Never>?
 
     init() {
         applyDockPolicy()
-        shortcuts.onTrigger = { [weak self] direction in self?.step(direction) }
+        shortcuts.onTrigger = { [weak self] direction in
+            guard let self else { return }
+            self.step(direction)
+            if let combo = self.shortcuts.combos[direction] { self.hint.show(direction, keys: combo.keys) }
+        }
         shortcuts.registerAll()
         subscription = Task { [weak self, client] in
             // One ordered stream, so a late "disconnected" can never

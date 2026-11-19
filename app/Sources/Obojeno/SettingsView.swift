@@ -118,7 +118,7 @@ struct SettingsView: View {
                         set: { model.configure(ConfigChange(lidAnimation: $0)) }))
             }
             Caption(
-                "The wallpaper tips back, blurs and darkens as you close your MacBook, and comes back as you open it."
+                "As you close your MacBook, darkness comes down over the wallpaper while it blurs and sinks back; opening brings it back."
             )
 
             SectionTitle("Folders")
@@ -167,10 +167,7 @@ struct SettingsGroup<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) { content }
             .padding(.horizontal, 14)
-            .background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(.white.opacity(0.08)))
+            .glassEffect(.regular, in: .rect(cornerRadius: 16))
     }
 }
 
@@ -344,7 +341,6 @@ struct CapsuleButtonStyle: ButtonStyle {
             .font(.callout.weight(.medium))
             .padding(.horizontal, 14)
             .padding(.vertical, 6)
-            .background(Capsule().fill(.white.opacity(configuration.isPressed ? 0.28 : 0.16)))
-            .overlay(Capsule().strokeBorder(.white.opacity(0.18)))
+            .glassEffect(.regular.interactive(), in: .capsule)
     }
 }

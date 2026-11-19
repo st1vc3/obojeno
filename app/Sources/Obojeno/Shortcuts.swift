@@ -30,13 +30,16 @@ struct KeyCombo: Codable, Equatable {
     }
 
     /// Like the menus show it: ⌃⌥⇧⌘ then the key.
-    var label: String {
-        var text = ""
-        if modifiers & UInt32(controlKey) != 0 { text += "⌃" }
-        if modifiers & UInt32(optionKey) != 0 { text += "⌥" }
-        if modifiers & UInt32(shiftKey) != 0 { text += "⇧" }
-        if modifiers & UInt32(cmdKey) != 0 { text += "⌘" }
-        return text + Self.keyName(keyCode)
+    var label: String { keys.joined() }
+
+    /// The modifiers and the key, each on its own keycap.
+    var keys: [String] {
+        var keys: [String] = []
+        if modifiers & UInt32(controlKey) != 0 { keys.append("⌃") }
+        if modifiers & UInt32(optionKey) != 0 { keys.append("⌥") }
+        if modifiers & UInt32(shiftKey) != 0 { keys.append("⇧") }
+        if modifiers & UInt32(cmdKey) != 0 { keys.append("⌘") }
+        return keys + [Self.keyName(keyCode)]
     }
 
     private static func keyName(_ code: UInt32) -> String {

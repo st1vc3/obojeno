@@ -310,7 +310,7 @@ pub(crate) fn cf_object<T: AsRef<AnyObject>>(value: &T) -> &AnyObject {
     value.as_ref()
 }
 
-fn retain_cf<T: AsRef<AnyObject>>(value: &T) -> Retained<AnyObject> {
+pub(crate) fn retain_cf<T: AsRef<AnyObject>>(value: &T) -> Retained<AnyObject> {
     let object: &AnyObject = value.as_ref();
     // SAFETY: retaining a valid object.
     unsafe { Retained::retain(std::ptr::from_ref(object).cast_mut()) }.expect("non-null")

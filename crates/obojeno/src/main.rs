@@ -65,6 +65,11 @@ enum Command {
     Previous,
     /// Set a random image of the gallery as wallpaper
     Random,
+    /// Freeze the lid animation at a percentage (0 open, 100 shut) or `off`,
+    /// to see it with the lid open. Needs the lid animation on and a running
+    /// daemon.
+    #[command(name = "lid-preview")]
+    LidPreview { percent: String },
     /// Copy images into the gallery's library
     Import {
         #[arg(required = true)]
@@ -187,6 +192,24 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Random => Request::Step {
             direction: Direction::Random,
         },
+        Command::LidPreview { percent } => {
+            let percent = match percent.trim_end_matches('%') {
+                "off" => None,
+                value => Some(
+                    value
+                        .parse::<u16>()
+                        .ok()
+                        .filter(|p| *p <= 100)
+                        .context("the preview is a percentage from 0 to 100, or `off`")?,
+                ),
+            };
+            match daemon::request(&paths, &Request::LidPreview { percent })? {
+                Some(Reply::Error { message }) => anyhow::bail!(message),
+                Some(_) => {}
+                None => anyhow::bail!("the lid preview needs a running daemon"),
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
         Command::Import { images } => {
             let images = images
                 .iter()

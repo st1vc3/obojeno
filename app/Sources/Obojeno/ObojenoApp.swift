@@ -3,24 +3,27 @@ import SwiftUI
 
 @main
 struct ObojenoApp: App {
-    @ViewState private var model = AppModel()
-
-    init() {
-        if let path = Snapshot.requested {
-            let model = model
-            DispatchQueue.main.async { Snapshot.run(model: model, to: path) }
-        }
-    }
+    @NSApplicationDelegateAdaptor private var delegate: AppDelegate
 
     var body: some Scene {
-        MenuBarExtra {
-            PopoverView()
-                .environment(model)
-        } label: {
-            Image(nsImage: MenuBarIcon.image(source: model.state?.palette.source))
-                .accessibilityLabel("obojeno")
+        // Everything lives in the menu bar item; see StatusPanel.
+        Settings { EmptyView() }
+    }
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var model: AppModel?
+    private var status: StatusPanel?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let model = AppModel()
+        self.model = model
+        if let path = Snapshot.requested {
+            Snapshot.run(model: model, to: path)
+            return
         }
-        .menuBarExtraStyle(.window)
+        status = StatusPanel(model: model)
     }
 }
 

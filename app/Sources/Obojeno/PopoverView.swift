@@ -43,25 +43,8 @@ struct PopoverView: View {
         }
         .padding(14)
         .frame(width: PopoverSize.width)
-        .background { Tint() }
         .environment(\.colorScheme, .dark)
         .tint(.white)
-    }
-}
-
-/// The wallpaper's own color over the popover's glass, so the menu looks
-/// cut from the wallpaper.
-private struct Tint: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        if let palette = model.state?.palette {
-            LinearGradient(
-                colors: [palette.source(tone: 46).opacity(0.62), palette.source(tone: 30).opacity(0.72)],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            )
-            .animation(.easeInOut(duration: 0.6), value: palette.source)
-        }
     }
 }
 
@@ -74,6 +57,14 @@ private struct Header: View {
             Text("obojeno")
                 .font(.title3.weight(.bold))
             Spacer(minLength: 8)
+            // Neighboring glass shapes blend into each other.
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 8) { controls }
+            }
+        }
+    }
+
+    @ViewBuilder private var controls: some View {
 
             HStack(spacing: 2) {
                 ForEach(Density.allCases, id: \.self) { density in
@@ -92,8 +83,7 @@ private struct Header: View {
                 }
             }
             .padding(3)
-            .background(Capsule().fill(.white.opacity(0.1)))
-            .overlay(Capsule().strokeBorder(.white.opacity(0.14)))
+            .glassEffect(.regular, in: .capsule)
 
             CircleButton(
                 symbol: model.mode == .dark ? "moon.fill" : "sun.max.fill",
@@ -118,7 +108,6 @@ private struct Header: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .help("More")
-        }
     }
 }
 
@@ -129,9 +118,8 @@ private struct CircleLabel: View {
         Image(systemName: symbol)
             .font(.system(size: 12, weight: .bold))
             .frame(width: 32, height: 32)
-            .background(Circle().fill(.white.opacity(0.14)))
-            .overlay(Circle().strokeBorder(.white.opacity(0.16)))
             .contentShape(Circle())
+            .glassEffect(.regular.interactive(), in: .circle)
     }
 }
 

@@ -27,7 +27,8 @@ jobs:
       - run: nix build
 
   app:
-    runs-on: macos-latest
+    # Liquid Glass needs the macOS 26 SDK.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

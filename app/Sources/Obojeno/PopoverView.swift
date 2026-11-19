@@ -104,6 +104,7 @@ private struct Header: View {
                     Task { await model.updater.check(userInitiated: true) }
                 }
                 .disabled(model.updater.checking)
+                Button("Show Log") { model.showLog() }
                 Button("Quit obojeno") { NSApp.terminate(nil) }
                     .keyboardShortcut("q")
             } label: {

@@ -42,7 +42,10 @@ struct DaemonClient: Sendable {
 
     /// What a subscription delivers, in order.
     enum Update: Sendable {
-        case connected(Bool)
+        /// Connected to the daemon with this process id (nil if it cannot
+        /// be told), or disconnected.
+        case connected(pid_t?)
+        case disconnected
         case reply(Reply)
     }
 
@@ -63,14 +66,14 @@ struct DaemonClient: Sendable {
                         (try? connection.write(Request.subscribe)) != nil
                     {
                         connected = true
-                        continuation.yield(.connected(true))
+                        continuation.yield(.connected(connection.peerPID()))
                         while let reply = try? connection.readReply() {
                             continuation.yield(.reply(reply))
                         }
                     }
                     if connected != false {
                         connected = false
-                        continuation.yield(.connected(false))
+                        continuation.yield(.disconnected)
                     }
                     if !control.isCancelled { Thread.sleep(forTimeInterval: 1) }
                 }
@@ -137,6 +140,14 @@ private final class Connection {
     }
 
     deinit { close(fd) }
+
+    /// The process on the other end.
+    func peerPID() -> pid_t? {
+        var pid: pid_t = 0
+        var length = socklen_t(MemoryLayout<pid_t>.size)
+        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &length) == 0 else { return nil }
+        return pid
+    }
 
     /// Wakes a blocked `read` on another thread; it then returns end of file.
     func shutdown() { Darwin.shutdown(fd, SHUT_RDWR) }

@@ -34,7 +34,7 @@ struct SettingsView: View {
                     "Check for updates automatically",
                     isOn: Binding(get: { model.updater.automatic }, set: { model.updater.automatic = $0 }))
             }
-            Caption("obojeno \(model.updater.currentVersion)")
+            Caption(versionText(daemon: state.version))
 
             SectionTitle("Theme")
             SettingsGroup {
@@ -160,6 +160,16 @@ struct SettingsView: View {
                 ShortcutRow("Random wallpaper", direction: .random)
             }
         }
+    }
+}
+
+extension SettingsView {
+    /// The app's version, and the daemon's when it differs (a daemon from a
+    /// login agent or Nix that is not updated with the app).
+    func versionText(daemon: String?) -> String {
+        let app = model.updater.currentVersion
+        guard let daemon, daemon != app else { return "obojeno \(app)" }
+        return "obojeno \(app), daemon \(daemon.isEmpty ? "older" : daemon)"
     }
 }
 

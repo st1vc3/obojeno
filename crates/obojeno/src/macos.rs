@@ -75,9 +75,59 @@ pub fn trash(path: &Path) -> anyhow::Result<()> {
         })
 }
 
-/// Switches macOS to light or dark. Goes through System Events, so macOS asks
-/// once for permission to control it.
+/// Switches macOS to light or dark: directly through the window server,
+/// which needs no permission, or through System Events if that is not
+/// available (macOS asks once for permission to control it).
 pub fn set_system_mode(mode: Mode) -> anyhow::Result<()> {
+    match skylight_appearance() {
+        Some(appearance) if appearance.set(mode.is_dark()) => Ok(()),
+        _ => set_system_mode_with_script(mode),
+    }
+}
+
+/// The window server's own appearance switch, what System Settings uses.
+/// Private, so looked up at runtime: a macOS without it falls back to
+/// System Events.
+struct SkylightAppearance {
+    get: unsafe extern "C" fn() -> bool,
+    set: unsafe extern "C" fn(bool),
+}
+
+impl SkylightAppearance {
+    /// Switches and reports whether it took effect.
+    fn set(&self, dark: bool) -> bool {
+        // SAFETY: both functions take and return plain booleans.
+        unsafe {
+            (self.set)(dark);
+            (self.get)() == dark
+        }
+    }
+}
+
+fn skylight_appearance() -> Option<SkylightAppearance> {
+    // SAFETY: dlopen and dlsym with valid C strings; the framework stays
+    // loaded for the life of the process (it is never closed).
+    unsafe {
+        let framework = libc::dlopen(
+            c"/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight".as_ptr(),
+            libc::RTLD_LAZY,
+        );
+        if framework.is_null() {
+            return None;
+        }
+        let get = libc::dlsym(framework, c"SLSGetAppearanceThemeLegacy".as_ptr());
+        let set = libc::dlsym(framework, c"SLSSetAppearanceThemeLegacy".as_ptr());
+        if get.is_null() || set.is_null() {
+            return None;
+        }
+        Some(SkylightAppearance {
+            get: std::mem::transmute::<*mut libc::c_void, unsafe extern "C" fn() -> bool>(get),
+            set: std::mem::transmute::<*mut libc::c_void, unsafe extern "C" fn(bool)>(set),
+        })
+    }
+}
+
+fn set_system_mode_with_script(mode: Mode) -> anyhow::Result<()> {
     let script = format!(
         "tell application \"System Events\" to tell appearance preferences to set dark mode to {}",
         mode.is_dark()

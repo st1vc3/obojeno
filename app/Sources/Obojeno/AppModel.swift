@@ -55,8 +55,7 @@ final class AppModel {
 
     private let client = DaemonClient()
     private var subscription: Task<Void, Never>?
-    /// The daemon is started once if it isn't running when the app opens.
-    private var triedStarting = false
+    let supervisor = DaemonSupervisor()
 
     init() {
         applyDockPolicy()
@@ -71,7 +70,8 @@ final class AppModel {
             // overwrite a newer "connected".
             for await update in client.subscribe() {
                 switch update {
-                case .connected(let connected): self?.connectionChanged(connected)
+                case .connected(let pid): self?.connectionChanged(true, pid: pid)
+                case .disconnected: self?.connectionChanged(false, pid: nil)
                 case .reply(let reply): self?.receive(reply)
                 }
             }
@@ -89,21 +89,22 @@ final class AppModel {
         return gallery?.allItems.first { $0.path == wallpaper }
     }
 
-    private func connectionChanged(_ connected: Bool) {
+    private func connectionChanged(_ connected: Bool, pid: pid_t?) {
         self.connected = connected
         if connected {
+            supervisor.connected(to: pid)
             refreshGallery()
-        } else if !triedStarting, Snapshot.requested == nil {
-            // Installed without a login agent (Homebrew, a download): the
-            // app brings its own daemon. A second daemon just exits.
-            triedStarting = true
-            startDaemon()
+        } else if Snapshot.requested == nil {
+            // Installed without a login agent (Homebrew, a download), or the
+            // daemon crashed: the app brings its own.
+            supervisor.disconnected()
         }
     }
 
     private func receive(_ reply: Reply) {
         switch reply {
         case .state(let state):
+            supervisor.check(version: state.version)
             withAnimation(.easeInOut(duration: 0.4)) { self.state = state }
             // Current markers and swatches follow the theme.
             refreshGallery()
@@ -208,22 +209,14 @@ final class AppModel {
         NSApp?.setActivationPolicy(showInDock ? .regular : .accessory)
     }
 
-    /// Starts the daemon; for when it is not set up to run at login.
+    /// Starts the daemon now, from the "not running" view.
     func startDaemon() {
-        guard let binary = Self.findDaemonBinary() else {
-            error = "Cannot find the obojeno command. Install it or run `obojeno daemon`."
-            return
-        }
-        let process = Process()
-        process.executableURL = binary
-        process.arguments = ["daemon"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            self.error = "Starting the daemon failed: \(error.localizedDescription)"
-        }
+        supervisor.start()
+        error = supervisor.error
+    }
+
+    func showLog() {
+        NSWorkspace.shared.open(DaemonSupervisor.logFile)
     }
 
     private func run(_ action: @escaping @MainActor (DaemonClient) async throws -> Void) {
@@ -242,21 +235,4 @@ final class AppModel {
         return path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
     }
 
-    /// Next to the app first (bundled), then where package managers put it.
-    private static func findDaemonBinary() -> URL? {
-        let user = NSUserName()
-        var candidates = [
-            Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/obojeno").path
-        ]
-        if let override = ProcessInfo.processInfo.environment["OBOJENO_BIN"] {
-            candidates.insert(override, at: 0)
-        }
-        candidates += [
-            "/opt/homebrew/bin/obojeno", "/usr/local/bin/obojeno",
-            "/etc/profiles/per-user/\(user)/bin/obojeno", "/run/current-system/sw/bin/obojeno",
-            NSHomeDirectory() + "/.nix-profile/bin/obojeno",
-        ]
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
-            .map { URL(fileURLWithPath: $0) }
-    }
 }

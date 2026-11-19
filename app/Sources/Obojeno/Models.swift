@@ -69,6 +69,8 @@ struct Finish: Codable, Sendable, Equatable {
 }
 
 struct DaemonState: Codable, Sendable, Equatable {
+    /// Missing from daemons older than 0.1.2.
+    let version: String?
     let wallpaper: String?
     let fixedColor: String?
     let mode: Mode
@@ -83,7 +85,7 @@ struct DaemonState: Codable, Sendable, Equatable {
     let finish: Finish
 
     enum CodingKeys: String, CodingKey {
-        case wallpaper, mode, palette, transition, duration, scheme, contrast, finish
+        case version, wallpaper, mode, palette, transition, duration, scheme, contrast, finish
         case fixedColor = "fixed_color"
         case wallpaperDirs = "wallpaper_dirs"
         case allSpaces = "all_spaces"

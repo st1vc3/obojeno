@@ -91,7 +91,11 @@ pub fn run(paths: Paths) -> anyhow::Result<()> {
         return Ok(());
     }
     let listener = bind(&socket)?;
-    tracing::info!("listening on {}", socket.display());
+    tracing::info!(
+        "obojeno {} listening on {}",
+        env!("CARGO_PKG_VERSION"),
+        socket.display()
+    );
 
     DAEMON
         .set(Daemon {
@@ -320,6 +324,7 @@ fn state_from(
         Source::Color { color } => Some(color),
     };
     Ok(ipc::State {
+        version: env!("CARGO_PKG_VERSION").to_owned(),
         wallpaper,
         fixed_color,
         mode,

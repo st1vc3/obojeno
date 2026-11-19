@@ -103,6 +103,10 @@ pub enum Reply {
 /// What the daemon shows: the theme on screen right now.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct State {
+    /// The daemon's version, so the app can replace a daemon left running
+    /// from before an update. Empty from daemons older than 0.1.2.
+    #[serde(default)]
+    pub version: String,
     pub wallpaper: Option<PathBuf>,
     /// A color fixed with `obojeno color`, or `None` when following the
     /// wallpaper.

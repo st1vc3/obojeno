@@ -203,6 +203,16 @@ right-click to show it in Finder or remove it from the library.
 scheme, transitions, Spaces, grain, corners, the lid animation, folders and
 shortcuts for next, previous and random wallpapers.
 
+## Troubleshooting
+
+The daemon logs to `~/Library/Logs/obojeno.log` (**⋯ → Show Log** in the menu
+bar app). The app keeps its daemon running: it starts it when none runs,
+restarts it after a crash, and replaces it after an update. `obojeno -v
+daemon` runs one in the terminal instead.
+
+simple-bar is refreshed through Übersicht, so macOS asks once whether obojeno
+may control it. Switching between light and dark needs no permission.
+
 ## Uninstall
 
 ```sh

@@ -18,6 +18,9 @@ insta = "1.49.0"
 libc = "0.2"
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSWorkspace", "NSScreen"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFURL", "CFData", "CFString", "CFDictionary"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGImage", "CGContext", "CGBitmapContext", "CGColorSpace", "CGGeometry"] }
+objc2-image-io = { version = "0.3.2", default-features = false, features = ["std", "CGImageSource", "objc2-core-graphics"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSString", "NSURL", "NSUserDefaults"] }
 material-colors = { version = "0.5.0", features = ["quantize", "serde"] }
 serde = { version = "1.0.229", features = ["derive"] }

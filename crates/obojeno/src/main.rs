@@ -1,4 +1,5 @@
 mod apply;
+mod imageio;
 mod macos;
 mod paths;
 mod reload;
@@ -100,21 +101,25 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let paths = Paths::from_env(cli.config.as_deref())?;
     match cli.command {
-        Command::Apply { mode } => Ok(print_report(&apply::apply(&paths, mode)?, &paths)),
+        Command::Apply { mode } => Ok(print_report(&apply::apply(&paths, mode, None)?, &paths)),
         Command::Set { image, mode } => {
             let image = std::fs::canonicalize(&image)
                 .with_context(|| format!("{} does not exist", image.display()))?;
             // Fail before touching the desktop if it is not an image.
-            palette::open_image(&image)
+            imageio::decode(&image)
+                .map_err(anyhow::Error::msg)
                 .with_context(|| format!("{} is not a readable image", image.display()))?;
             macos::set_wallpaper(&image)?;
             set_source(&paths, Source::Wallpaper)?;
-            Ok(print_report(&apply::apply(&paths, mode)?, &paths))
+            Ok(print_report(
+                &apply::apply(&paths, mode, Some(&image))?,
+                &paths,
+            ))
         }
         Command::Color { color, mode, .. } => {
             let source = color.map_or(Source::Wallpaper, |color| Source::Color { color });
             set_source(&paths, source)?;
-            Ok(print_report(&apply::apply(&paths, mode)?, &paths))
+            Ok(print_report(&apply::apply(&paths, mode, None)?, &paths))
         }
         Command::Preview { image, scheme } => {
             let config = Config::load(&paths.config_file)?;
@@ -122,7 +127,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 Some(image) => image,
                 None => macos::current_wallpaper()?,
             };
-            let decoded = palette::open_image(&image)
+            let decoded = imageio::decode(&image)
+                .map_err(anyhow::Error::msg)
                 .with_context(|| format!("reading {}", image.display()))?;
             let candidates = palette::source_candidates(&decoded);
             let palette = Palette::from_source(

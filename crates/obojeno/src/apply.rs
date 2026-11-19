@@ -40,17 +40,23 @@ struct PaletteFile<'a> {
 }
 
 /// Themes everything from the current source: the wallpaper, or the color
-/// fixed with `obojeno color`.
-pub fn apply(paths: &Paths, mode: Option<Mode>) -> anyhow::Result<Report> {
+/// fixed with `obojeno color`. Pass `wallpaper` when it was just set: macOS
+/// keeps reporting the previous one for a moment.
+pub fn apply(
+    paths: &Paths,
+    mode: Option<Mode>,
+    wallpaper: Option<&Path>,
+) -> anyhow::Result<Report> {
     let config = Config::load(&paths.config_file)?;
     let mut state = State::load(&paths.state_file());
     let mode = mode.unwrap_or_else(crate::macos::system_mode);
 
     // A fixed color still has a wallpaper on screen (simple-bar blurs it), but
     // a wallpaper that cannot be read must not stop it.
-    let wallpaper_path = crate::macos::current_wallpaper();
+    let wallpaper_path =
+        wallpaper.map_or_else(crate::macos::current_wallpaper, |p| Ok(p.to_owned()));
     let wallpaper = match (&state.source, wallpaper_path) {
-        (_, Ok(path)) => match Wallpaper::open(&path) {
+        (_, Ok(path)) => match Wallpaper::open_with(&path, crate::imageio::decode) {
             Ok(w) => Some(w),
             Err(e) if state.source == Source::Wallpaper => {
                 return Err(e).with_context(|| format!("reading wallpaper {}", path.display()));

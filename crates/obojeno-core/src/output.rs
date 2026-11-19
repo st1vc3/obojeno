@@ -42,12 +42,25 @@ pub struct Wallpaper {
     /// SHA-256 of the file contents. Outputs made from the pixels record it
     /// and are skipped while it stays the same.
     pub key: String,
+    decode: Decoder,
     image: OnceCell<Result<DynamicImage, String>>,
+}
+
+/// Turns an image file into pixels. Platforms can plug in their own codecs.
+pub type Decoder = fn(&Path) -> Result<DynamicImage, String>;
+
+fn decode_with_image_crate(path: &Path) -> Result<DynamicImage, String> {
+    crate::palette::open_image(path).map_err(|e| e.to_string())
 }
 
 impl Wallpaper {
     /// Hashes the file; decoding happens lazily in [`Self::image`].
     pub fn open(path: &Path) -> std::io::Result<Self> {
+        Self::open_with(path, decode_with_image_crate)
+    }
+
+    /// Like [`Self::open`], decoding with `decode`.
+    pub fn open_with(path: &Path, decode: Decoder) -> std::io::Result<Self> {
         let mut file = std::fs::File::open(path)?;
         let mut hasher = Sha256::new();
         let mut buf = vec![0; 1 << 16];
@@ -60,6 +73,7 @@ impl Wallpaper {
         Ok(Self {
             path: path.to_owned(),
             key: hex(&hasher.finalize()),
+            decode,
             image: OnceCell::new(),
         })
     }
@@ -69,13 +83,14 @@ impl Wallpaper {
         Self {
             path: path.to_owned(),
             key: key.to_owned(),
+            decode: decode_with_image_crate,
             image: OnceCell::from(Ok(image)),
         }
     }
 
     pub fn image(&self) -> Result<&DynamicImage, &str> {
         self.image
-            .get_or_init(|| crate::palette::open_image(&self.path).map_err(|e| e.to_string()))
+            .get_or_init(|| (self.decode)(&self.path))
             .as_ref()
             .map_err(String::as_str)
     }
@@ -492,6 +507,7 @@ mod tests {
         let same = Wallpaper {
             path: "/nonexistent.jpg".into(),
             key: "aaa".to_owned(),
+            decode: |_| panic!("must not decode"),
             image: OnceCell::new(),
         };
         let rendered = render("[targets.simple-bar]", &dirs, &palette, Some(&same));

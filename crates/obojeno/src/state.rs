@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 const MAX_CACHED_COLORS: usize = 256;
 
 /// Bumped when source color extraction changes, invalidating cached colors.
-const EXTRACTION_VERSION: u32 = 1;
+/// 2: decoding through ImageIO.
+const EXTRACTION_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -124,7 +125,7 @@ mod tests {
         let path = dir.path().join("state.json");
         std::fs::write(
             &path,
-            r##"{"source":{"kind":"color","color":"#010203"},"extraction_version":0,"source_colors":[["a","#ffffff"]]}"##,
+            r##"{"source":{"kind":"color","color":"#010203"},"extraction_version":1,"source_colors":[["a","#ffffff"]]}"##,
         )
         .unwrap();
         let state = State::load(&path);

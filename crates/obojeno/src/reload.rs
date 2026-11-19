@@ -2,7 +2,7 @@
 
 use std::ffi::OsString;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -61,9 +61,19 @@ fn command(args: &[String]) -> Outcome {
     let Some((program, rest)) = args.split_first() else {
         return Outcome::Done;
     };
-    let mut child = match Command::new(program)
+    let path = search_path();
+    // An absolute path lets std use posix_spawn. With a bare name and a
+    // changed PATH it forks instead, and forking while other threads are in
+    // CoreFoundation (gallery indexing, AppKit) can kill the child before
+    // it execs.
+    let Some(executable) = resolve(program, &path) else {
+        return Outcome::NotInstalled {
+            command: program.clone(),
+        };
+    };
+    let mut child = match Command::new(executable)
         .args(rest)
-        .env("PATH", search_path())
+        .env("PATH", path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -105,6 +115,21 @@ fn command(args: &[String]) -> Outcome {
             ))
         }
     }
+}
+
+/// Finds `program` like a shell would, in `path`.
+fn resolve(program: &str, path: &OsString) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let executable = |p: &Path| {
+        std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    };
+    if program.contains('/') {
+        let p = PathBuf::from(program);
+        return executable(&p).then_some(p);
+    }
+    std::env::split_paths(path)
+        .map(|dir| dir.join(program))
+        .find(|p| executable(p))
 }
 
 /// `PATH` plus the places package managers install to. Under launchd, `PATH`
@@ -189,6 +214,18 @@ mod tests {
             None,
         );
         assert_eq!(outcome, Outcome::NotRunning);
+    }
+
+    #[test]
+    fn resolves_programs_on_the_path() {
+        let path = search_path();
+        let sh = resolve("sh", &path).unwrap();
+        assert!(sh.is_absolute() && sh.ends_with("sh"), "{}", sh.display());
+        assert_eq!(resolve("/bin/sh", &path), Some(PathBuf::from("/bin/sh")));
+        assert_eq!(resolve("obojeno-no-such-command", &path), None);
+        // Folders and non-executable files are not programs.
+        assert_eq!(resolve("/tmp", &path), None);
+        assert_eq!(resolve("/etc/hosts", &path), None);
     }
 
     #[test]

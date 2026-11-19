@@ -1,8 +1,7 @@
 //! Telling apps to pick up their new colors.
 
-use std::ffi::OsString;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -10,7 +9,7 @@ use std::time::Duration;
 use obojeno_core::ipc::Outcome;
 use obojeno_core::targets::{Reload, Signal};
 
-use crate::macos;
+use crate::{macos, programs};
 
 /// Reload commands talk to running apps; anything slower is stuck.
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -61,19 +60,22 @@ fn command(args: &[String]) -> Outcome {
     let Some((program, rest)) = args.split_first() else {
         return Outcome::Done;
     };
-    let path = search_path();
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let dirs = programs::search_dirs(&home);
     // An absolute path lets std use posix_spawn. With a bare name and a
     // changed PATH it forks instead, and forking while other threads are in
     // CoreFoundation (gallery indexing, AppKit) can kill the child before
     // it execs.
-    let Some(executable) = resolve(program, &path) else {
+    let Some(executable) = programs::find(program, &dirs) else {
         return Outcome::NotInstalled {
             command: program.clone(),
         };
     };
     let mut child = match Command::new(executable)
         .args(rest)
-        .env("PATH", path)
+        .env("PATH", programs::path_variable(&dirs))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -115,50 +117,6 @@ fn command(args: &[String]) -> Outcome {
             ))
         }
     }
-}
-
-/// Finds `program` like a shell would, in `path`.
-fn resolve(program: &str, path: &OsString) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    let executable = |p: &Path| {
-        std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    };
-    if program.contains('/') {
-        let p = PathBuf::from(program);
-        return executable(&p).then_some(p);
-    }
-    std::env::split_paths(path)
-        .map(|dir| dir.join(program))
-        .find(|p| executable(p))
-}
-
-/// `PATH` plus the places package managers install to. Under launchd, `PATH`
-/// is only the system folders, so Homebrew and Nix tools would be missing.
-fn search_path() -> OsString {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    let user = std::env::var("USER").unwrap_or_default();
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect())
-        .unwrap_or_default();
-    for extra in [
-        PathBuf::from("/opt/homebrew/bin"),
-        PathBuf::from("/usr/local/bin"),
-        home.join(".nix-profile/bin"),
-        PathBuf::from(format!("/etc/profiles/per-user/{user}/bin")),
-        PathBuf::from("/run/current-system/sw/bin"),
-        PathBuf::from("/nix/var/nix/profiles/default/bin"),
-        PathBuf::from("/usr/bin"),
-        PathBuf::from("/bin"),
-        PathBuf::from("/usr/sbin"),
-        PathBuf::from("/sbin"),
-    ] {
-        if !dirs.contains(&extra) {
-            dirs.push(extra);
-        }
-    }
-    std::env::join_paths(dirs).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -214,25 +172,5 @@ mod tests {
             None,
         );
         assert_eq!(outcome, Outcome::NotRunning);
-    }
-
-    #[test]
-    fn resolves_programs_on_the_path() {
-        let path = search_path();
-        let sh = resolve("sh", &path).unwrap();
-        assert!(sh.is_absolute() && sh.ends_with("sh"), "{}", sh.display());
-        assert_eq!(resolve("/bin/sh", &path), Some(PathBuf::from("/bin/sh")));
-        assert_eq!(resolve("obojeno-no-such-command", &path), None);
-        // Folders and non-executable files are not programs.
-        assert_eq!(resolve("/tmp", &path), None);
-        assert_eq!(resolve("/etc/hosts", &path), None);
-    }
-
-    #[test]
-    fn search_path_includes_package_managers() {
-        let path = search_path();
-        let dirs: Vec<_> = std::env::split_paths(&path).collect();
-        assert!(dirs.contains(&PathBuf::from("/opt/homebrew/bin")));
-        assert!(dirs.contains(&PathBuf::from("/run/current-system/sw/bin")));
     }
 }

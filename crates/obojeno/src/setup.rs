@@ -12,7 +12,7 @@ use crate::paths::Paths;
 
 pub fn targets(paths: &Paths) -> anyhow::Result<Vec<TargetInfo>> {
     let config = Config::load(&paths.config_file)?;
-    let places = Places::of_this_user(&paths.dirs.home);
+    let places = Places::of_this_user(&paths.dirs);
     Ok(targets::BUILTIN_NAMES
         .iter()
         .filter_map(|&name| {

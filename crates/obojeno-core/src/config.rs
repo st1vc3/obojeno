@@ -193,38 +193,36 @@ impl Config {
                 .map(|p| read_template(p).map_err(|e| err(format!("reading template {p}: {e}"))))
                 .transpose()?;
 
-            let mut target = match targets::builtin(name) {
-                Some(mut t) => {
-                    if let Some(source) = user_template {
-                        let slot = t
-                            .primary_template_mut()
-                            .ok_or_else(|| err("has no template to replace".to_owned()))?;
-                        *slot = Cow::Owned(source);
-                    }
-                    if let Some(output) = &cfg.output {
-                        let first = t.outputs.first_mut().ok_or_else(|| {
-                            err("writes no file, `output` does not apply".to_owned())
-                        })?;
-                        first.path.clone_from(output);
-                    }
-                    t
+            let mut target = if let Some(mut t) = targets::builtin(name) {
+                if let Some(source) = user_template {
+                    let slot = t
+                        .primary_template_mut()
+                        .ok_or_else(|| err("has no template to replace".to_owned()))?;
+                    *slot = Cow::Owned(source);
                 }
-                None => {
-                    let (Some(template), Some(output)) = (user_template, &cfg.output) else {
-                        return Err(err(format!(
-                            "not a built-in target ({}), so it needs `template` and `output`",
-                            targets::BUILTIN_NAMES.join(", ")
-                        )));
-                    };
-                    Target {
-                        outputs: vec![Output {
-                            path: output.clone(),
-                            kind: OutputKind::Text {
-                                template: Cow::Owned(template),
-                            },
-                        }],
-                        ..Target::custom(name)
-                    }
+                if let Some(output) = &cfg.output {
+                    let first = t
+                        .outputs
+                        .first_mut()
+                        .ok_or_else(|| err("writes no file, `output` does not apply".to_owned()))?;
+                    first.path.clone_from(output);
+                }
+                t
+            } else {
+                let (Some(template), Some(output)) = (user_template, &cfg.output) else {
+                    return Err(err(format!(
+                        "not a built-in target ({}), so it needs `template` and `output`",
+                        targets::BUILTIN_NAMES.join(", ")
+                    )));
+                };
+                Target {
+                    outputs: vec![Output {
+                        path: output.clone(),
+                        kind: OutputKind::Text {
+                            template: Cow::Owned(template),
+                        },
+                    }],
+                    ..Target::custom(name)
                 }
             };
             if let Some(reload) = &cfg.reload {
@@ -611,7 +609,7 @@ mod tests {
     #[test]
     fn disabled_targets_are_skipped() {
         let c = Config::parse("[targets.kitty]\nenabled = false").unwrap();
-        assert!(c.resolve_targets(no_files).unwrap().is_empty());
+        assert_eq!(c.resolve_targets(no_files).unwrap().len(), 0);
     }
 
     #[test]

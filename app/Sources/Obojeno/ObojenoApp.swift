@@ -11,6 +11,11 @@ struct ObojenoApp: App {
     }
 }
 
+/// Facts about this build of the app.
+enum AppInfo {
+    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var model: AppModel?
@@ -19,10 +24,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let model = AppModel()
         self.model = model
-        if let path = Snapshot.requested {
-            Snapshot.run(model: model, to: path)
-            return
-        }
         status = StatusPanel(model: model)
     }
 }

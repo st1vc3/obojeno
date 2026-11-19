@@ -168,7 +168,8 @@ fn free_name(dir: &Path, image: &Path) -> anyhow::Result<PathBuf> {
         .extension()
         .map(|e| format!(".{}", e.to_string_lossy()))
         .unwrap_or_default();
-    (1..)
+    // A bound, so a folder full of copies fails rather than hangs.
+    (1..=10_000)
         .map(|n| match n {
             1 => dir.join(format!("{stem}{ext}")),
             n => dir.join(format!("{stem} {n}{ext}")),

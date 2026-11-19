@@ -52,6 +52,10 @@ impl From<Color> for Formats {
 }
 
 /// HSL with hue in degrees and saturation/lightness in percent.
+#[expect(
+    clippy::many_single_char_names, // The usual names in color math.
+    clippy::float_cmp // `max` is exactly one of r, g, b.
+)]
 fn hsl(c: Color) -> (f64, f64, f64) {
     let [r, g, b] = [c.r, c.g, c.b].map(|v| f64::from(v) / 255.0);
     let max = r.max(g).max(b);

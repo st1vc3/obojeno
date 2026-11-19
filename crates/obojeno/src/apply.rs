@@ -118,10 +118,10 @@ fn render_and_write(
 ) -> anyhow::Result<Vec<TargetReport>> {
     let dirs = &paths.dirs;
     let targets = config.resolve_targets(|p| std::fs::read_to_string(dirs.expand(p)))?;
-    let renderer = Renderer::new();
+    let engine = Renderer::new();
 
     let mut reports = Vec::new();
-    let mut reloads = Vec::new();
+    let mut to_reload = Vec::new();
     for resolved in &targets {
         let mut report = TargetReport {
             name: resolved.target.name.clone(),
@@ -130,7 +130,7 @@ fn render_and_write(
             reload: None,
             error: None,
         };
-        match output::render_target(resolved, palette, mode, wallpaper, dirs, &renderer) {
+        match output::render_target(resolved, palette, mode, wallpaper, dirs, &engine) {
             Ok(rendered) => {
                 for file in &rendered.files {
                     match write_if_changed(&file.path, &file.contents) {
@@ -146,7 +146,7 @@ fn render_and_write(
                 // they always reload; the rest only when something changed.
                 let changed = !report.written.is_empty() || rendered.files.is_empty();
                 if report.error.is_none() && changed && !rendered.reload.is_empty() {
-                    reloads.push((reports.len(), rendered));
+                    to_reload.push((reports.len(), rendered));
                 }
             }
             Err(e) => report.error = Some(e.to_string()),
@@ -157,7 +157,7 @@ fn render_and_write(
     // Reloads talk to separate apps; run them side by side so the whole
     // desktop changes at once.
     let outcomes: Vec<(usize, Outcome)> = std::thread::scope(|scope| {
-        let handles: Vec<_> = reloads
+        let handles: Vec<_> = to_reload
             .iter()
             .map(|(i, rendered)| {
                 scope.spawn(move || {

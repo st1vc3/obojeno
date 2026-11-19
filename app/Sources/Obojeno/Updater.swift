@@ -28,9 +28,6 @@ final class Updater {
     static let repository = "st1vc3/obojeno"
     static let brewCommand = "brew upgrade --cask obojeno"
 
-    let currentVersion =
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
-
     /// A newer release, until it is installed or dismissed.
     private(set) var available: Release?
     private(set) var checking = false
@@ -74,7 +71,7 @@ final class Updater {
         defer { checking = false }
         do {
             let latest = try await Self.latestRelease()
-            if let latest, Self.isNewer(latest.version, than: currentVersion) {
+            if let latest, Self.isNewer(latest.version, than: AppInfo.version) {
                 available = latest
                 message = nil
             } else if userInitiated {
@@ -82,7 +79,7 @@ final class Updater {
                 message =
                     latest == nil
                     ? "No releases are published yet."
-                    : "obojeno \(currentVersion) is the newest version."
+                    : "obojeno \(AppInfo.version) is the newest version."
             }
         } catch {
             if userInitiated { message = "Checking for updates failed: \(error.localizedDescription)" }

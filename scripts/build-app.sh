@@ -17,7 +17,7 @@ swift() {
   env -u DEVELOPER_DIR -u SDKROOT -u NIX_CFLAGS_COMPILE -u NIX_LDFLAGS /usr/bin/swift "$@"
 }
 
-version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)"
+version="$("$root/scripts/version.sh")"
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers"
@@ -66,4 +66,15 @@ else
 fi
 codesign --force "${sign[@]}" "$app/Contents/Helpers/obojeno"
 codesign --force "${sign[@]}" "$app"
+
+codesign --verify --strict --deep "$app"
+if [[ "${UNIVERSAL:-}" == 1 ]]; then
+  for binary in "$app/Contents/MacOS/Obojeno" "$app/Contents/Helpers/obojeno"; do
+    archs="$(lipo -archs "$binary" | tr ' ' '\n' | sort | xargs)"
+    if [[ "$archs" != "arm64 x86_64" ]]; then
+      echo "$binary is $archs, not universal" >&2
+      exit 1
+    fi
+  done
+fi
 echo "built $app"

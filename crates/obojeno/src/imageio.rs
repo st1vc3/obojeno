@@ -9,8 +9,8 @@ use objc2_core_foundation::{
     CGPoint, CGRect, CGSize,
 };
 use objc2_core_graphics::{
-    CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo,
-    CGImageByteOrderInfo, kCGColorSpaceSRGB,
+    CGBitmapContextCreate, CGBitmapContextCreateImage, CGColorSpace, CGContext, CGImage,
+    CGImageAlphaInfo, CGImageByteOrderInfo, kCGColorSpaceSRGB,
 };
 use objc2_image_io::{
     CGImageSource, kCGImageSourceCreateThumbnailFromImageAlways,
@@ -55,9 +55,9 @@ pub fn cg_image(path: &Path) -> Result<CFRetained<CGImage>, String> {
 /// previews or scaled decoding (JPEG, HEIC) never decode every pixel.
 pub fn thumbnail(path: &Path, max_side: u32) -> Result<DynamicImage, String> {
     let source = open(path)?;
-    let max_side = CFNumber::new_i32(i32::try_from(max_side).unwrap_or(i32::MAX));
+    let side = CFNumber::new_i32(i32::try_from(max_side).unwrap_or(i32::MAX));
     // SAFETY: the keys are valid ImageIO constants.
-    let (always, max_size, transform) = unsafe {
+    let (always, size_key, transform) = unsafe {
         (
             kCGImageSourceCreateThumbnailFromImageAlways,
             kCGImageSourceThumbnailMaxPixelSize,
@@ -66,8 +66,8 @@ pub fn thumbnail(path: &Path, max_side: u32) -> Result<DynamicImage, String> {
     };
     let yes: &CFType = CFBoolean::new(true);
     let options = CFDictionary::<CFString, CFType>::from_slices(
-        &[always, max_size, transform],
-        &[yes, &max_side, yes],
+        &[always, size_key, transform],
+        &[yes, &side, yes],
     );
     // SAFETY: the options have the types ImageIO documents for these keys.
     let image = unsafe {
@@ -105,7 +105,7 @@ fn to_pixels(image: &CGImage) -> Result<DynamicImage, String> {
         )
     }
     .ok_or("creating a bitmap context failed")?;
-    #[allow(clippy::cast_precision_loss)] // Image sides are far below 2^52.
+    #[expect(clippy::cast_precision_loss)] // Image sides are far below 2^52.
     let rect = CGRect::new(
         CGPoint::new(0.0, 0.0),
         CGSize::new(width as f64, height as f64),
@@ -123,22 +123,53 @@ fn to_pixels(image: &CGImage) -> Result<DynamicImage, String> {
 /// Opaque pixels as an image for Core Animation, decoded already, so
 /// showing it costs nothing on the main thread.
 pub fn cg_image_from(pixels: &RgbaImage) -> Option<CFRetained<CGImage>> {
-    let (width, height) = (pixels.width() as usize, pixels.height() as usize);
+    // SAFETY: the color space name is a valid CoreGraphics constant.
     let srgb = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }))?;
-    let mut bytes = pixels.as_raw().clone();
-    // SAFETY: `bytes` is `height` rows of `width * 4` bytes and outlives the
-    // context, which is dropped below; the image copies the pixels.
+    let width = pixels.width() as usize;
+    image_from_pixels(
+        &mut pixels.as_raw().clone(),
+        Bitmap {
+            width,
+            height: pixels.height() as usize,
+            bytes_per_row: width * 4,
+            color_space: Some(&srgb),
+            info: CGImageAlphaInfo::NoneSkipLast.0 | CGImageByteOrderInfo::Order32Big.0,
+        },
+    )
+}
+
+/// How the bytes given to [`image_from_pixels`] are laid out.
+#[derive(Clone, Copy)]
+pub struct Bitmap<'a> {
+    pub width: usize,
+    pub height: usize,
+    pub bytes_per_row: usize,
+    /// `None` for alpha-only images (masks).
+    pub color_space: Option<&'a CGColorSpace>,
+    /// `CGImageAlphaInfo` and byte order flags.
+    pub info: u32,
+}
+
+/// An image copied from `pixels`, which hold `bitmap.height` rows from the
+/// top. `None` if the layout does not fit them.
+pub fn image_from_pixels(pixels: &mut [u8], bitmap: Bitmap<'_>) -> Option<CFRetained<CGImage>> {
+    if bitmap.width == 0 || pixels.len() < bitmap.bytes_per_row * bitmap.height {
+        return None;
+    }
+    // SAFETY: `pixels` holds `height` rows of `bytes_per_row` bytes (checked
+    // above) and outlives the context, which is dropped at the end of this
+    // block; the image copies the pixels.
     unsafe {
         let context = CGBitmapContextCreate(
-            bytes.as_mut_ptr().cast(),
-            width,
-            height,
+            pixels.as_mut_ptr().cast(),
+            bitmap.width,
+            bitmap.height,
             8,
-            width * 4,
-            Some(&srgb),
-            CGImageAlphaInfo::NoneSkipLast.0 | CGImageByteOrderInfo::Order32Big.0,
+            bitmap.bytes_per_row,
+            bitmap.color_space,
+            bitmap.info,
         )?;
-        objc2_core_graphics::CGBitmapContextCreateImage(Some(&context))
+        CGBitmapContextCreateImage(Some(&context))
     }
 }
 

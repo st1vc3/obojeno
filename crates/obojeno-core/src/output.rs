@@ -33,6 +33,21 @@ impl Dirs {
             _ => PathBuf::from(path),
         }
     }
+
+    /// The reverse of [`Self::expand`]: `~/...` for paths in the home
+    /// directory, as people write them in configs.
+    pub fn abbreviate(&self, path: &Path) -> String {
+        path.strip_prefix(&self.home).map_or_else(
+            |_| path.display().to_string(),
+            |rest| {
+                if rest.as_os_str().is_empty() {
+                    "~".to_owned()
+                } else {
+                    format!("~/{}", rest.display())
+                }
+            },
+        )
+    }
 }
 
 /// The current wallpaper. Its pixels are decoded on first use only, since
@@ -96,8 +111,63 @@ impl Wallpaper {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+/// Lowercase hexadecimal, for hashes in file names and markers.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut text, b| {
+            let _ = write!(text, "{b:02x}");
+            text
+        })
+}
+
+/// `overlay` merged into the file at `base_path` (empty when missing).
+fn merge_into(format: MergeFormat, base_path: &Path, overlay: &str) -> Result<Vec<u8>, String> {
+    let base = match std::fs::read_to_string(base_path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("reading {}: {e}", base_path.display())),
+    };
+    merge(format, &base, overlay)
+        .map(String::into_bytes)
+        .map_err(|e| format!("merging into {}: {e}", base_path.display()))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Blur {
+    width: u32,
+    sigma: f32,
+    quality: u8,
+}
+
+/// The blurred wallpaper at `path` and its marker, or nothing when they are
+/// up to date: blurring is slow, so it only runs for a new wallpaper.
+fn blurred_wallpaper(
+    path: &Path,
+    wallpaper: &Wallpaper,
+    blur: Blur,
+) -> Result<Vec<RenderedFile>, String> {
+    let marker = source_marker(path);
+    if path.exists() && std::fs::read_to_string(&marker).is_ok_and(|k| k == wallpaper.key) {
+        return Ok(Vec::new());
+    }
+    let image = wallpaper
+        .image()
+        .map_err(|e| format!("decoding {}: {e}", wallpaper.path.display()))?;
+    let jpeg =
+        blurred_jpeg(image, blur.width, blur.sigma, blur.quality).map_err(|e| e.to_string())?;
+    Ok(vec![
+        RenderedFile {
+            path: path.to_owned(),
+            contents: jpeg,
+        },
+        // Written after the image, so a crash in between re-renders.
+        RenderedFile {
+            path: marker,
+            contents: wallpaper.key.clone().into_bytes(),
+        },
+    ])
 }
 
 /// The file next to a pixel-derived output that records which wallpaper it
@@ -192,48 +262,25 @@ pub fn render_target(
                 template,
                 base,
             } => {
-                let overlay = render("template", template)?;
                 let base_path = match base {
                     Some(b) => dirs.expand(&render("base path", b)?),
                     None => path.clone(),
                 };
-                let base_text = match std::fs::read_to_string(&base_path) {
-                    Ok(t) => t,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-                    Err(e) => {
-                        return Err(file_err(format!("reading {}: {e}", base_path.display())));
-                    }
-                };
-                merge(*format, &base_text, &overlay)
-                    .map_err(|e| file_err(format!("merging into {}: {e}", base_path.display())))?
-                    .into_bytes()
+                merge_into(*format, &base_path, &render("template", template)?).map_err(file_err)?
             }
             OutputKind::BlurredWallpaper {
                 width,
                 sigma,
                 quality,
             } => {
-                let Some(wallpaper) = wallpaper else { continue };
-                let marker = source_marker(&path);
-                if path.exists()
-                    && std::fs::read_to_string(&marker).is_ok_and(|k| k == wallpaper.key)
-                {
-                    continue;
+                if let Some(wallpaper) = wallpaper {
+                    let blur = Blur {
+                        width: *width,
+                        sigma: *sigma,
+                        quality: *quality,
+                    };
+                    files.extend(blurred_wallpaper(&path, wallpaper, blur).map_err(file_err)?);
                 }
-                let image = wallpaper
-                    .image()
-                    .map_err(|e| file_err(format!("decoding {}: {e}", wallpaper.path.display())))?;
-                let jpeg = blurred_jpeg(image, *width, *sigma, *quality)
-                    .map_err(|e| file_err(e.to_string()))?;
-                files.push(RenderedFile {
-                    path,
-                    contents: jpeg,
-                });
-                // Written after the image, so a crash in between re-renders.
-                files.push(RenderedFile {
-                    path: marker,
-                    contents: wallpaper.key.clone().into_bytes(),
-                });
                 continue;
             }
         };
@@ -413,6 +460,18 @@ mod tests {
         assert_eq!(dirs.expand("~/a/b"), dirs.home.join("a/b"));
         assert_eq!(dirs.expand("/abs/~x"), PathBuf::from("/abs/~x"));
         assert_eq!(dirs.expand("~other/x"), PathBuf::from("~other/x"));
+    }
+
+    #[test]
+    fn abbreviates_home() {
+        let (_tmp, dirs, _) = setup();
+        assert_eq!(dirs.abbreviate(&dirs.home), "~");
+        assert_eq!(dirs.abbreviate(&dirs.home.join("a/b")), "~/a/b");
+        assert_eq!(dirs.abbreviate(Path::new("/elsewhere")), "/elsewhere");
+        assert_eq!(
+            dirs.expand(&dirs.abbreviate(&dirs.home.join("x"))),
+            dirs.home.join("x")
+        );
     }
 
     #[test]

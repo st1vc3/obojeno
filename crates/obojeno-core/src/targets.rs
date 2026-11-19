@@ -139,6 +139,7 @@ watcher:start(colors .. "/colors", {}, vim.schedule_wrap(function()
   pcall(vim.cmd.colorscheme, "obojeno")
 end))"#;
 
+#[expect(clippy::too_many_lines)] // One arm per target, best read together.
 pub fn builtin(name: &str) -> Option<Target> {
     let base = Target::custom(name);
     Some(match name {

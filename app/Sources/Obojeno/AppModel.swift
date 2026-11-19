@@ -82,22 +82,13 @@ final class AppModel {
 
     var mode: Mode { state?.mode ?? .dark }
 
-    func color(_ role: String) -> Color {
-        state.map { $0.palette.color(role, $0.mode) } ?? .secondary
-    }
-
-    var currentItem: GalleryItem? {
-        guard let wallpaper = state?.wallpaper else { return nil }
-        return gallery?.allItems.first { $0.path == wallpaper }
-    }
-
     private func connectionChanged(_ connected: Bool, pid: pid_t?) {
         self.connected = connected
         if connected {
             supervisor.connected(to: pid)
             refreshGallery()
             refreshTargets()
-        } else if Snapshot.requested == nil {
+        } else {
             // Installed without a login agent (Homebrew, a download), or the
             // daemon crashed: the app brings its own.
             supervisor.disconnected()
@@ -136,10 +127,12 @@ final class AppModel {
     var needsWelcome: Bool { state?.configured == false }
 
     func refreshTargets() {
-        run { client in
-            if case .targets(let targets) = try await client.send(.targets) {
-                self.targets = targets
-            }
+        run { client in try await self.reloadTargets(client) }
+    }
+
+    private func reloadTargets(_ client: DaemonClient) async throws {
+        if case .targets(let targets) = try await client.send(.targets) {
+            self.targets = targets
         }
     }
 
@@ -150,9 +143,7 @@ final class AppModel {
         let change = ConfigChange(targets: [target.name: TargetChange(enabled: enabled, options: all)])
         run { client in
             _ = try await client.send(.configure(change))
-            if case .targets(let targets) = try await client.send(.targets) {
-                self.targets = targets
-            }
+            try await self.reloadTargets(client)
         }
     }
 
@@ -172,9 +163,7 @@ final class AppModel {
         }
         run { client in
             _ = try await client.send(.configure(change))
-            if case .targets(let targets) = try await client.send(.targets) {
-                self.targets = targets
-            }
+            try await self.reloadTargets(client)
         }
     }
 

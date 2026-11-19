@@ -169,7 +169,7 @@ extension SettingsView {
     /// The app's version, and the daemon's when it differs (a daemon from a
     /// login agent or Nix that is not updated with the app).
     func versionText(daemon: String?) -> String {
-        let app = model.updater.currentVersion
+        let app = AppInfo.version
         guard let daemon, daemon != app else { return "obojeno \(app)" }
         return "obojeno \(app), daemon \(daemon.isEmpty ? "older" : daemon)"
     }

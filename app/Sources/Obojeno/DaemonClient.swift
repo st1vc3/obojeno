@@ -21,7 +21,8 @@ struct DaemonClient: Sendable {
     /// Same place the daemon uses: `$XDG_STATE_HOME/obojeno/obojeno.sock`.
     let socketPath: String = {
         let env = ProcessInfo.processInfo.environment
-        let state = env["XDG_STATE_HOME"].flatMap { $0.hasPrefix("/") ? $0 : nil }
+        let state =
+            env["XDG_STATE_HOME"].flatMap { $0.hasPrefix("/") ? $0 : nil }
             ?? NSHomeDirectory() + "/.local/state"
         return state + "/obojeno/obojeno.sock"
     }()

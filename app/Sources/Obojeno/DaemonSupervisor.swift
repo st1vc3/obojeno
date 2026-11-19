@@ -12,8 +12,6 @@ final class DaemonSupervisor {
     /// The log is moved aside to `obojeno.log.1` beyond this size.
     private static let maxLogSize = 5 * 1024 * 1024
 
-    let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
-
     /// The last start failed, for the "not running" view.
     private(set) var error: String?
 
@@ -66,7 +64,7 @@ final class DaemonSupervisor {
     /// Replaces the app's own daemon when the state it sent shows another
     /// version.
     func check(version: String?) {
-        guard version != appVersion, let pid = daemonPID, !replaced.contains(pid),
+        guard version != AppInfo.version, let pid = daemonPID, !replaced.contains(pid),
             let binary = Self.findBinary(), let path = Self.executablePath(of: pid),
             Self.sameFile(path, binary.path)
         else { return }

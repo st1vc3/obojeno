@@ -17,9 +17,14 @@ fn main_thread() -> anyhow::Result<MainThreadMarker> {
 pub fn current_wallpaper() -> anyhow::Result<PathBuf> {
     let mtm = main_thread()?;
     let screen = NSScreen::mainScreen(mtm).context("no screen attached")?;
+    wallpaper_of(&screen)
+}
+
+/// The wallpaper of a screen's current Space.
+pub fn wallpaper_of(screen: &NSScreen) -> anyhow::Result<PathBuf> {
     let url = NSWorkspace::sharedWorkspace()
-        .desktopImageURLForScreen(&screen)
-        .context("macOS reports no wallpaper for the main screen")?;
+        .desktopImageURLForScreen(screen)
+        .with_context(|| format!("macOS reports no wallpaper for {}", screen.localizedName()))?;
     let path = url.path().context("the wallpaper is not a local file")?;
     Ok(PathBuf::from(path.to_string()))
 }
@@ -216,10 +221,9 @@ mod tests {
             pids.contains(&c_int::try_from(std::process::id()).unwrap()),
             "{pids:?}"
         );
-        assert!(
-            pids_named("surely-no-process-has-this-name")
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            pids_named("surely-no-process-has-this-name").unwrap(),
+            Vec::<c_int>::new()
         );
     }
 }

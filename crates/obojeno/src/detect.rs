@@ -4,6 +4,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use obojeno_core::output::Dirs;
+
+use crate::programs;
+
 /// What was found for one target.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Found {
@@ -16,51 +20,32 @@ pub struct Found {
 
 /// Where to look: the home folder and the folders with commands.
 pub struct Places {
-    pub home: PathBuf,
+    pub dirs: Dirs,
     pub bin_dirs: Vec<PathBuf>,
 }
 
 impl Places {
-    /// This user's home, `PATH`, and where package managers put commands
-    /// (a daemon started by the app or launchd has a minimal `PATH`).
-    pub fn of_this_user(home: &Path) -> Self {
-        let mut bin_dirs: Vec<PathBuf> = std::env::var_os("PATH")
-            .map(|path| std::env::split_paths(&path).collect())
-            .unwrap_or_default();
-        let user = std::env::var("USER").unwrap_or_default();
-        for dir in [
-            PathBuf::from("/opt/homebrew/bin"),
-            PathBuf::from("/usr/local/bin"),
-            home.join(".nix-profile/bin"),
-            PathBuf::from(format!("/etc/profiles/per-user/{user}/bin")),
-            PathBuf::from("/run/current-system/sw/bin"),
-            home.join(".local/bin"),
-            home.join(".cargo/bin"),
-        ] {
-            if !bin_dirs.contains(&dir) {
-                bin_dirs.push(dir);
-            }
-        }
+    pub fn of_this_user(dirs: &Dirs) -> Self {
         Self {
-            home: home.to_owned(),
-            bin_dirs,
+            dirs: dirs.clone(),
+            bin_dirs: programs::search_dirs(&dirs.home),
         }
     }
 
     fn command(&self, name: &str) -> bool {
-        self.bin_dirs.iter().any(|dir| dir.join(name).is_file())
+        programs::find(name, &self.bin_dirs).is_some()
     }
 
     /// An app bundle in /Applications or ~/Applications.
     fn app(&self, names: &[&str]) -> bool {
         names.iter().any(|name| {
             Path::new("/Applications").join(name).exists()
-                || self.home.join("Applications").join(name).exists()
+                || self.dirs.home.join("Applications").join(name).exists()
         })
     }
 
     fn home(&self, path: &str) -> PathBuf {
-        self.home.join(path)
+        self.dirs.home.join(path)
     }
 }
 
@@ -102,7 +87,7 @@ pub fn find(target: &str, places: &Places) -> Found {
             {
                 found
                     .options
-                    .insert("vault".to_owned(), tilde(&vault, &places.home));
+                    .insert("vault".to_owned(), places.dirs.abbreviate(&vault));
             }
         }
         "zen" => {
@@ -114,7 +99,7 @@ pub fn find(target: &str, places: &Places) -> Found {
             {
                 found
                     .options
-                    .insert("profile".to_owned(), tilde(&profile, &places.home));
+                    .insert("profile".to_owned(), places.dirs.abbreviate(&profile));
                 let prefs = std::fs::read_to_string(profile.join("prefs.js")).unwrap_or_default()
                     + &std::fs::read_to_string(profile.join("user.js")).unwrap_or_default();
                 found.set_up = Some(
@@ -203,21 +188,17 @@ fn zen_profile(ini: &str, root: &Path) -> Option<PathBuf> {
         .and_then(|(_, fields)| fields.get("Path").map(|path| resolve(fields, path)))
 }
 
-/// `~/...` for paths in the home folder, as people write them in configs.
-fn tilde(path: &Path, home: &Path) -> String {
-    path.strip_prefix(home).map_or_else(
-        |_| path.display().to_string(),
-        |rest| format!("~/{}", rest.display()),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn places(home: &Path) -> Places {
         Places {
-            home: home.to_owned(),
+            dirs: Dirs {
+                home: home.to_owned(),
+                cache: home.join(".cache/obojeno"),
+                config: home.join(".config/obojeno"),
+            },
             bin_dirs: vec![home.join("bin")],
         }
     }
@@ -232,7 +213,11 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let places = places(home.path());
         assert!(!find("borders", &places).installed);
-        write(&home.path().join("bin/borders"), "");
+        let borders = home.path().join("bin/borders");
+        write(&borders, "");
+        assert!(!find("borders", &places).installed, "not executable");
+        let executable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+        std::fs::set_permissions(&borders, executable).unwrap();
         assert!(find("borders", &places).installed);
         write(&home.path().join(".config/herdr/config.toml"), "");
         assert!(find("herdr", &places).installed);

@@ -20,18 +20,9 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 12) {
             if model.connected, model.state != nil {
                 if model.needsWelcome {
-                    ScrollView {
-                        WelcomeView().padding(.bottom, 4)
-                    }
-                    .scrollIndicators(.never)
-                    .frame(height: PopoverSize.contentHeight + 44)
+                    Page { WelcomeView() }
                 } else if showingSettings {
-                    ScrollView {
-                        SettingsView { withAnimation(.snappy) { showingSettings = false } }
-                            .padding(.bottom, 4)
-                    }
-                    .scrollIndicators(.never)
-                    .frame(height: PopoverSize.contentHeight + 44)
+                    Page { SettingsView { withAnimation(.snappy) { showingSettings = false } } }
                 } else {
                     Header(showSettings: { withAnimation(.snappy) { showingSettings = true } })
                     UpdateBanner()
@@ -55,6 +46,21 @@ struct PopoverView: View {
     }
 }
 
+/// A full-height page in place of the header and gallery, such as the
+/// settings.
+private struct Page<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ScrollView {
+            content.padding(.bottom, 4)
+        }
+        .scrollIndicators(.never)
+        // As tall as the header and gallery together.
+        .frame(height: PopoverSize.contentHeight + 44)
+    }
+}
+
 private struct Header: View {
     @Environment(AppModel.self) private var model
     let showSettings: () -> Void
@@ -74,53 +80,54 @@ private struct Header: View {
 
     @ViewBuilder private var controls: some View {
 
-            HStack(spacing: 2) {
-                ForEach(Density.allCases, id: \.self) { density in
-                    Button {
-                        withAnimation(.snappy) { model.density = density }
-                    } label: {
-                        Image(systemName: density.symbol)
-                            .font(.system(size: 12, weight: .semibold))
-                            .frame(width: 30, height: 26)
-                            .background(
-                                Capsule().fill(.white.opacity(model.density == density ? 0.22 : 0)))
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .help("\(density.rawValue.capitalized) tiles")
+        HStack(spacing: 2) {
+            ForEach(Density.allCases, id: \.self) { density in
+                Button {
+                    withAnimation(.snappy) { model.density = density }
+                } label: {
+                    Image(systemName: density.symbol)
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 30, height: 26)
+                        .background(
+                            Capsule().fill(.white.opacity(model.density == density ? 0.22 : 0))
+                        )
+                        .contentShape(Capsule())
                 }
+                .buttonStyle(.plain)
+                .help("\(density.rawValue.capitalized) tiles")
             }
-            .padding(3)
-            .glassEffect(.regular, in: .capsule)
+        }
+        .padding(3)
+        .glassEffect(.regular, in: .capsule)
 
-            CircleButton(
-                symbol: model.mode == .dark ? "moon.fill" : "sun.max.fill",
-                help: model.mode == .dark ? "Switch to light" : "Switch to dark",
-                action: model.toggleMode)
-            CircleButton(symbol: "plus", help: "Add images to your library", action: model.importImages)
-            Menu {
-                Button("Settings…", action: showSettings)
-                    .keyboardShortcut(",")
-                Divider()
-                Button("Next Wallpaper") { model.step(.next) }
-                Button("Previous Wallpaper") { model.step(.previous) }
-                Button("Random Wallpaper") { model.step(.random) }
-                Divider()
-                Button("Check for Updates…") {
-                    Task { await model.updater.check(userInitiated: true) }
-                }
-                .disabled(model.updater.checking)
-                Button("Show Log") { model.showLog() }
-                Button("Quit obojeno") { NSApp.terminate(nil) }
-                    .keyboardShortcut("q")
-            } label: {
-                CircleLabel(symbol: "ellipsis")
+        CircleButton(
+            symbol: model.mode == .dark ? "moon.fill" : "sun.max.fill",
+            help: model.mode == .dark ? "Switch to light" : "Switch to dark",
+            action: model.toggleMode)
+        CircleButton(symbol: "plus", help: "Add images to your library", action: model.importImages)
+        Menu {
+            Button("Settings…", action: showSettings)
+                .keyboardShortcut(",")
+            Divider()
+            Button("Next Wallpaper") { model.step(.next) }
+            Button("Previous Wallpaper") { model.step(.previous) }
+            Button("Random Wallpaper") { model.step(.random) }
+            Divider()
+            Button("Check for Updates…") {
+                Task { await model.updater.check(userInitiated: true) }
             }
-            .menuStyle(.button)
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("More")
+            .disabled(model.updater.checking)
+            Button("Show Log") { model.showLog() }
+            Button("Quit obojeno") { NSApp.terminate(nil) }
+                .keyboardShortcut("q")
+        } label: {
+            CircleLabel(symbol: "ellipsis")
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("More")
     }
 }
 
@@ -137,11 +144,8 @@ private struct UpdateBanner: View {
             } actions: {
                 switch InstallMethod.current {
                 case .homebrew:
-                    Button("Copy Command") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(Updater.brewCommand, forType: .string)
-                    }
-                    .help(Updater.brewCommand)
+                    Button("Copy Command") { model.copy(Updater.brewCommand) }
+                        .help(Updater.brewCommand)
                 case .nix:
                     Button("Release Notes") { NSWorkspace.shared.open(release.page) }
                 case .download:

@@ -5,7 +5,7 @@
 //! thread, which AppKit (transitions) requires anyway.
 
 use std::collections::{HashSet, VecDeque};
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::{BufRead as _, BufReader};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
@@ -23,7 +23,7 @@ use obojeno_core::{Mode, Palette};
 use crate::apply::{self, Applied};
 use crate::paths::Paths;
 use crate::state::{Source, State};
-use crate::{actions, desktop, gallery, macos, setup, watch};
+use crate::{actions, desktop, gallery, lid, lid_view, macos, setup, watch};
 
 /// Work for the main thread.
 pub enum Job {
@@ -119,7 +119,7 @@ pub fn run(paths: Paths) -> anyhow::Result<()> {
     if let Ok(config) = Config::load(&daemon().paths.config_file) {
         desktop::apply_settings(config.finish, config.lid_animation, mtm);
     }
-    desktop::watch_lid();
+    lid::watch();
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     // Theme once at start, so the desktop is right after login.
@@ -193,44 +193,46 @@ fn drain() {
 fn handle(request: Request) -> Reply {
     let paths = &daemon().paths;
     match request {
-        Request::State => return current_state().map_or_else(error, |s| Reply::State(Box::new(s))),
-        Request::Gallery => return gallery_now().map_or_else(error, Reply::Gallery),
-        Request::Import { paths: images } => {
-            return Config::load(&paths.config_file)
-                .map_err(anyhow::Error::from)
-                .and_then(|config| gallery::import(paths, &config, &images))
-                .and_then(|_| gallery_now())
-                .map_or_else(error, Reply::Gallery);
-        }
+        Request::State => state_reply(),
+        Request::Gallery => gallery_now().map_or_else(error, Reply::Gallery),
         Request::Targets => {
-            return setup::targets(&daemon().paths)
-                .map_or_else(error, |targets| Reply::Targets { targets });
+            setup::targets(paths).map_or_else(error, |targets| Reply::Targets { targets })
         }
+        Request::Import { paths: images } => {
+            change_gallery(|config| gallery::import(paths, config, &images).map(drop))
+        }
+        Request::Remove { path } => change_gallery(|config| gallery::remove(paths, config, &path)),
         Request::LidPreview { percent } => {
-            return match MainThreadMarker::new() {
-                Some(mtm) => {
-                    desktop::preview_lid(percent, mtm);
-                    current_state().map_or_else(error, |s| Reply::State(Box::new(s)))
-                }
-                None => error(anyhow::anyhow!("not on the main thread")),
+            // Jobs run on the main thread.
+            let Some(mtm) = MainThreadMarker::new() else {
+                return error(anyhow::anyhow!("not on the main thread"));
             };
+            lid_view::preview(percent, mtm);
+            state_reply()
         }
-        Request::Remove { path } => {
-            return Config::load(&paths.config_file)
-                .map_err(anyhow::Error::from)
-                .and_then(|config| gallery::remove(paths, &config, &path))
-                .and_then(|()| gallery_now())
-                .map_or_else(error, Reply::Gallery);
-        }
-        _ => {}
+        request => actions::execute(paths, &request)
+            .and_then(|applied| {
+                publish(&applied, &Config::load(&paths.config_file)?);
+                Ok(applied)
+            })
+            .map_or_else(error, |applied| Reply::Report(applied.report)),
     }
-    let result = actions::execute(paths, &request).and_then(|applied| {
-        publish(&applied, &Config::load(&paths.config_file)?).map(|()| applied)
-    });
-    result.map_or_else(error, |applied| Reply::Report(applied.report))
 }
 
-#[allow(clippy::needless_pass_by_value)] // Used as a `map_or_else` callback.
+fn state_reply() -> Reply {
+    current_state().map_or_else(error, |state| Reply::State(Box::new(state)))
+}
+
+/// Changes the library, then replies with the gallery as it is now.
+fn change_gallery(change: impl FnOnce(&Config) -> anyhow::Result<()>) -> Reply {
+    Config::load(&daemon().paths.config_file)
+        .map_err(anyhow::Error::from)
+        .and_then(|config| change(&config))
+        .and_then(|()| gallery_now())
+        .map_or_else(error, Reply::Gallery)
+}
+
+#[expect(clippy::needless_pass_by_value)] // Used as a `map_or_else` callback.
 fn error(e: anyhow::Error) -> Reply {
     Reply::Error {
         message: format!("{e:#}"),
@@ -245,12 +247,8 @@ fn handle_change(change: Change) -> anyhow::Result<()> {
             }
             let config = Config::load(&daemon().paths.config_file)?;
             let shown = macos::current_wallpaper()?;
-            let chosen = daemon()
-                .current
-                .lock()
-                .expect("state lock")
-                .clone()
-                .and_then(|s| (s.fixed_color.is_none()).then_some(s.wallpaper).flatten());
+            let chosen =
+                current().and_then(|s| (s.fixed_color.is_none()).then_some(s.wallpaper).flatten());
             match chosen {
                 // macOS only changes the Space in view, so bring this one up
                 // to date now that it is visible.
@@ -263,8 +261,7 @@ fn handle_change(change: Change) -> anyhow::Result<()> {
         }
         Change::Wallpaper => {
             let path = macos::current_wallpaper()?;
-            let current = daemon().current.lock().expect("state lock").clone();
-            if current.is_some_and(|s| s.wallpaper.as_deref() == Some(path.as_path())) {
+            if current().is_some_and(|s| s.wallpaper.as_deref() == Some(path.as_path())) {
                 return Ok(());
             }
             tracing::info!("wallpaper is now {}", path.display());
@@ -272,8 +269,7 @@ fn handle_change(change: Change) -> anyhow::Result<()> {
         }
         Change::Appearance => {
             let mode = macos::system_mode();
-            let current = daemon().current.lock().expect("state lock").clone();
-            if current.is_some_and(|s| s.mode == mode) {
+            if current().is_some_and(|s| s.mode == mode) {
                 return Ok(());
             }
             tracing::info!("appearance is now {mode}");
@@ -293,28 +289,27 @@ fn handle_change(change: Change) -> anyhow::Result<()> {
 fn run_apply(mode: Option<Mode>, wallpaper: Option<&Path>) -> anyhow::Result<Applied> {
     let paths = &daemon().paths;
     let applied = apply::apply(paths, mode, wallpaper)?;
-    publish(&applied, &Config::load(&paths.config_file)?)?;
+    publish(&applied, &Config::load(&paths.config_file)?);
     Ok(applied)
 }
 
 /// Records what is on screen and tells subscribers.
-fn publish(applied: &Applied, config: &Config) -> anyhow::Result<()> {
+fn publish(applied: &Applied, config: &Config) {
     let state = state_from(
         applied.report.wallpaper.clone(),
         applied.report.mode,
         &applied.palette,
         config,
-    )?;
+    );
     if let Some(mtm) = MainThreadMarker::new() {
         desktop::apply_settings(config.finish, config.lid_animation, mtm);
         // Ready before the lid moves, so it never waits on decoding.
-        desktop::prepare_lid(mtm);
+        lid_view::prepare(mtm);
     }
     *daemon().current.lock().expect("state lock") = Some(state.clone());
     *daemon().config_text.lock().expect("config lock") =
         std::fs::read_to_string(&daemon().paths.config_file).unwrap_or_default();
     broadcast(&Reply::State(Box::new(state)));
-    Ok(())
 }
 
 fn state_from(
@@ -322,12 +317,12 @@ fn state_from(
     mode: Mode,
     palette: &Palette,
     config: &Config,
-) -> anyhow::Result<ipc::State> {
+) -> ipc::State {
     let fixed_color = match State::load(&daemon().paths.state_file()).source {
         Source::Wallpaper => None,
         Source::Color { color } => Some(color),
     };
-    Ok(ipc::State {
+    ipc::State {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         configured: daemon().paths.config_file.exists(),
         wallpaper,
@@ -342,7 +337,7 @@ fn state_from(
         all_spaces: config.all_spaces,
         lid_animation: config.lid_animation,
         finish: config.finish,
-    })
+    }
 }
 
 /// The gallery as far as it is indexed; starts indexing the rest.
@@ -443,13 +438,13 @@ fn broadcast(reply: &Reply) {
         .retain(|tx| tx.send(reply.clone()).is_ok());
 }
 
+/// What is on screen; `None` until the first apply.
+fn current() -> Option<ipc::State> {
+    daemon().current.lock().expect("state lock").clone()
+}
+
 fn current_state() -> anyhow::Result<ipc::State> {
-    daemon()
-        .current
-        .lock()
-        .expect("state lock")
-        .clone()
-        .context("not themed yet")
+    current().context("not themed yet")
 }
 
 fn accept(listener: &UnixListener) {
@@ -459,7 +454,7 @@ fn accept(listener: &UnixListener) {
                 let spawned = std::thread::Builder::new()
                     .name("obojeno-client".into())
                     .spawn(move || {
-                        if let Err(e) = serve(stream) {
+                        if let Err(e) = serve(&stream) {
                             tracing::debug!("client: {e:#}");
                         }
                     });
@@ -472,10 +467,10 @@ fn accept(listener: &UnixListener) {
     }
 }
 
-fn serve(stream: UnixStream) -> anyhow::Result<()> {
+fn serve(stream: &UnixStream) -> anyhow::Result<()> {
     let mut line = String::new();
-    BufReader::new(&stream).read_line(&mut line)?;
-    let mut writer = &stream;
+    BufReader::new(stream).read_line(&mut line)?;
+    let mut writer = stream;
     let request: Request = match serde_json::from_str(&line) {
         Ok(request) => request,
         Err(e) => {
@@ -509,15 +504,17 @@ fn serve(stream: UnixStream) -> anyhow::Result<()> {
     send(&mut writer, &reply)
 }
 
-fn send(writer: &mut impl std::io::Write, reply: &Reply) -> anyhow::Result<()> {
-    let mut line = serde_json::to_vec(reply)?;
+/// Writes one message as a line of JSON, the protocol's framing.
+fn send(writer: &mut impl std::io::Write, message: &impl serde::Serialize) -> anyhow::Result<()> {
+    let mut line = serde_json::to_vec(message)?;
     line.push(b'\n');
     writer.write_all(&line)?;
     writer.flush()?;
     Ok(())
 }
 
-/// Sends one request to a running daemon. `None` when no daemon runs.
+/// Sends one request to a running daemon and returns its reply; an error
+/// reply becomes an error. `None` when no daemon runs.
 pub fn request(paths: &Paths, request: &Request) -> anyhow::Result<Option<Reply>> {
     let socket = ipc::socket_path(&paths.state);
     let mut stream = match UnixStream::connect(&socket) {
@@ -532,12 +529,11 @@ pub fn request(paths: &Paths, request: &Request) -> anyhow::Result<Option<Reply>
         }
         Err(e) => return Err(e).with_context(|| format!("connecting to {}", socket.display())),
     };
-    let mut line = serde_json::to_vec(request)?;
-    line.push(b'\n');
-    stream.write_all(&line)?;
-    let mut reply = String::new();
-    BufReader::new(&stream).read_line(&mut reply)?;
-    Ok(Some(
-        serde_json::from_str(&reply).context("bad reply from the daemon")?,
-    ))
+    send(&mut stream, request)?;
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line)?;
+    match serde_json::from_str(&line).context("bad reply from the daemon")? {
+        Reply::Error { message } => bail!(message),
+        reply => Ok(Some(reply)),
+    }
 }

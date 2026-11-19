@@ -39,17 +39,12 @@ enum SchemeVariant: String, Codable, Sendable, CaseIterable {
     }
 }
 
+/// The parts of the daemon's palette the app shows.
 struct Palette: Codable, Sendable, Equatable {
     let source: String
     let variant: SchemeVariant
-    let light: [String: String]
-    let dark: [String: String]
     /// Tonal palettes, 101 colors each, indexed by tone (0 black, 100 white).
     let palettes: [String: [String]]
-
-    func color(_ role: String, _ mode: Mode) -> Color {
-        Color(hex: (mode == .dark ? dark : light)[role] ?? source)
-    }
 
     /// The wallpaper's own color at a tone, at full saturation.
     func source(tone: Int) -> Color {
@@ -122,7 +117,6 @@ struct Gallery: Codable, Sendable, Equatable {
     let folders: [GalleryFolder]
     let pending: Int
 
-    var allItems: [GalleryItem] { recent + folders.flatMap(\.items) }
 }
 
 /// A built-in target (an app obojeno themes), as found on this Mac.

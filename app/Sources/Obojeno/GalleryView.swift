@@ -90,7 +90,8 @@ private struct EmptyLibrary: View {
                 .frame(maxWidth: .infinity, minHeight: 120)
                 .background(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(.white.opacity(0.25), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])))
+                        .strokeBorder(.white.opacity(0.25), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                )
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -128,13 +129,15 @@ private struct Tile: View {
                             .padding(.vertical, 7)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(
-                                LinearGradient(colors: [.clear, .black.opacity(0.45)], startPoint: .top, endPoint: .bottom))
+                                LinearGradient(
+                                    colors: [.clear, .black.opacity(0.45)], startPoint: .top, endPoint: .bottom))
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(.white.opacity(current ? 0.95 : hovering ? 0.4 : 0.12), lineWidth: current ? 2.5 : 1)
+                        .strokeBorder(
+                            .white.opacity(current ? 0.95 : hovering ? 0.4 : 0.12), lineWidth: current ? 2.5 : 1)
                 )
                 .shadow(color: .black.opacity(hovering ? 0.35 : 0.22), radius: hovering ? 9 : 5, y: hovering ? 5 : 3)
                 .scaleEffect(hovering ? 1.035 : 1)

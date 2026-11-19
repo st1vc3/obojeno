@@ -1,6 +1,7 @@
 //! Snapshots of every built-in target rendered from a fixed palette, so
 //! template changes show up in review. Update with `cargo insta review`.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use obojeno_core::config::Config;
@@ -27,21 +28,15 @@ fn builtin_targets() {
          [targets.obsidian]\nvault = \"~/Notes\"\n[targets.zen]\nprofile = \"/zen\"\n",
     )
     .unwrap();
-    let renderer = Renderer::new();
+    let engine = Renderer::new();
     for resolved in config.resolve_targets(|_| unreachable!()).unwrap() {
         for mode in [Mode::Dark, Mode::Light] {
-            let rendered = output::render_target(
-                &resolved,
-                &palette,
-                mode,
-                Some(&wallpaper),
-                &dirs,
-                &renderer,
-            )
-            .unwrap();
+            let rendered =
+                output::render_target(&resolved, &palette, mode, Some(&wallpaper), &dirs, &engine)
+                    .unwrap();
             let mut snapshot = String::new();
             for file in &rendered.files {
-                snapshot.push_str(&format!("==> {}\n", file.path.display()));
+                writeln!(snapshot, "==> {}", file.path.display()).unwrap();
                 match std::str::from_utf8(&file.contents) {
                     Ok(text) if file.path.extension().is_none_or(|e| e != "jpg") => {
                         snapshot.push_str(text);
@@ -49,14 +44,14 @@ fn builtin_targets() {
                             snapshot.push('\n');
                         }
                     }
-                    _ => snapshot.push_str(&format!("<{} bytes>\n", file.contents.len())),
+                    _ => writeln!(snapshot, "<{} bytes>", file.contents.len()).unwrap(),
                 }
             }
             for reload in &rendered.reload {
-                snapshot.push_str(&format!("==> reload: {reload:?}\n"));
+                writeln!(snapshot, "==> reload: {reload:?}").unwrap();
             }
             if let Some(process) = &rendered.only_if_running {
-                snapshot.push_str(&format!("==> only if running: {process}\n"));
+                writeln!(snapshot, "==> only if running: {process}").unwrap();
             }
             insta::assert_snapshot!(format!("{}_{mode}", rendered.name), snapshot);
         }

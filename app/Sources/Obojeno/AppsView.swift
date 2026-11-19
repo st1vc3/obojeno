@@ -155,11 +155,13 @@ struct WelcomeView: View {
     @ViewBuilder private func choose(found: [TargetInfo], selection: Set<String>) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Welcome to obojeno").font(.title2.weight(.bold)).legibleOnGlass()
-            Text("Pick a wallpaper and your apps take on its colors. These are the apps found on this Mac; choose the ones to theme.")
-                .font(.callout)
-                .foregroundStyle(.white.opacity(0.85))
-                .legibleOnGlass()
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                "Pick a wallpaper and your apps take on its colors. These are the apps found on this Mac; choose the ones to theme."
+            )
+            .font(.callout)
+            .foregroundStyle(.white.opacity(0.85))
+            .legibleOnGlass()
+            .fixedSize(horizontal: false, vertical: true)
         }
         if found.isEmpty {
             Caption("No apps obojeno knows were found. You can add them later in Settings.")

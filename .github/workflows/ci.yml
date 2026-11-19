@@ -25,6 +25,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v23
       - run: nix flake check
       - run: nix build
+      - run: nix shell nixpkgs#shellcheck -c shellcheck scripts/*.sh
 
   app:
     # Liquid Glass needs the macOS 26 SDK.
@@ -35,12 +36,9 @@ jobs:
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
-      # Universal, as releases are built.
+      - run: swift format lint --strict -r app/Sources app/Tests
+      # Universal, as releases are built; the script verifies the result.
       - run: UNIVERSAL=1 ./scripts/build-app.sh
-      - run: codesign --verify --strict --deep target/Obojeno.app
-      - run: |
-          test "$(lipo -archs target/Obojeno.app/Contents/MacOS/Obojeno | tr " " "\n" | sort | xargs)" = "arm64 x86_64"
-          test "$(lipo -archs target/Obojeno.app/Contents/Helpers/obojeno | tr " " "\n" | sort | xargs)" = "arm64 x86_64"
       - run: swift test --package-path app
       - name: Cask style
         run: |

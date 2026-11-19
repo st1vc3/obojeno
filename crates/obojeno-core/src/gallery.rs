@@ -116,10 +116,7 @@ impl Fingerprint {
         hasher.update(path.as_os_str().as_encoded_bytes());
         hasher.update(self.size.to_le_bytes());
         hasher.update(self.modified_nanos.to_le_bytes());
-        hasher.finalize()[..16]
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
+        crate::output::hex(&hasher.finalize()[..16])
     }
 }
 

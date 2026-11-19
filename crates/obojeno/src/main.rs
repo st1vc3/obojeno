@@ -5,9 +5,12 @@ mod desktop;
 mod detect;
 mod gallery;
 mod imageio;
+mod layers;
 mod lid;
+mod lid_view;
 mod macos;
 mod paths;
+mod programs;
 mod reload;
 mod service;
 mod setup;
@@ -15,6 +18,7 @@ mod state;
 mod transition;
 mod watch;
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -192,120 +196,104 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             },
         },
         Command::Color { color, .. } => Request::SetColor { color },
-        Command::Next => Request::Step {
-            direction: Direction::Next,
-        },
-        Command::Previous => Request::Step {
-            direction: Direction::Previous,
-        },
-        Command::Random => Request::Step {
-            direction: Direction::Random,
-        },
-        Command::LidPreview { percent } => {
-            let percent = match percent.trim_end_matches('%') {
-                "off" => None,
-                value => Some(
-                    value
-                        .parse::<u16>()
-                        .ok()
-                        .filter(|p| *p <= 100)
-                        .context("the preview is a percentage from 0 to 100, or `off`")?,
-                ),
-            };
-            match daemon::request(&paths, &Request::LidPreview { percent })? {
-                Some(Reply::Error { message }) => anyhow::bail!(message),
-                Some(_) => {}
-                None => anyhow::bail!("the lid preview needs a running daemon"),
-            }
-            return Ok(ExitCode::SUCCESS);
-        }
-        Command::Import { images } => {
-            let images = images
-                .iter()
-                .map(std::path::absolute)
-                .collect::<Result<Vec<_>, _>>()?;
-            let count = images.len();
-            match daemon::request(
-                &paths,
-                &Request::Import {
-                    paths: images.clone(),
-                },
-            )? {
-                Some(Reply::Error { message }) => anyhow::bail!(message),
-                Some(_) => {}
-                None => {
-                    let config = Config::load(&paths.config_file)?;
-                    gallery::import(&paths, &config, &images)?;
-                }
-            }
-            println!(
-                "Imported {count} image{} into the library.",
-                if count == 1 { "" } else { "s" }
-            );
-            return Ok(ExitCode::SUCCESS);
-        }
-        Command::Service { action } => {
-            run_service(action)?;
-            return Ok(ExitCode::SUCCESS);
-        }
-        Command::Daemon => {
-            daemon::run(paths)?;
-            return Ok(ExitCode::SUCCESS);
-        }
-        Command::Gallery => {
-            let gallery = match daemon::request(&paths, &Request::Gallery)? {
-                Some(Reply::Gallery(gallery)) => gallery,
-                Some(Reply::Error { message }) => anyhow::bail!(message),
-                Some(_) => anyhow::bail!("unexpected reply from the daemon"),
-                None => gallery::build_blocking(
-                    &paths,
-                    macos::current_wallpaper().ok().as_deref(),
-                    macos::system_mode(),
-                )?,
-            };
-            print_gallery(&gallery);
-            return Ok(ExitCode::SUCCESS);
-        }
-        Command::Preview { image, scheme } => {
-            let config = Config::load(&paths.config_file)?;
-            let image = match image {
-                Some(image) => image,
-                None => macos::current_wallpaper()?,
-            };
-            let decoded = imageio::decode(&image)
-                .map_err(anyhow::Error::msg)
-                .with_context(|| format!("reading {}", image.display()))?;
-            let candidates = palette::source_candidates(&decoded);
-            let palette = Palette::from_source(
-                candidates[0],
-                scheme.unwrap_or(config.scheme),
-                config.contrast,
-            );
-            print_preview(&palette, &candidates);
-            return Ok(ExitCode::SUCCESS);
-        }
-        Command::Targets { name } => {
-            print_targets(name.as_deref(), &paths)?;
-            return Ok(ExitCode::SUCCESS);
-        }
-        Command::Setup { dry_run } => {
-            run_setup(&paths, dry_run)?;
-            return Ok(ExitCode::SUCCESS);
-        }
+        Command::Next => step(Direction::Next),
+        Command::Previous => step(Direction::Previous),
+        Command::Random => step(Direction::Random),
+        Command::LidPreview { percent } => return lid_preview(&paths, &percent),
+        Command::Import { images } => return import(&paths, &images),
+        Command::Service { action } => return run_service(action),
+        Command::Daemon => return daemon::run(paths).map(|()| ExitCode::SUCCESS),
+        Command::Gallery => return show_gallery(&paths),
+        Command::Preview { image, scheme } => return preview(&paths, image, scheme),
+        Command::Targets { name } => return show_targets(name.as_deref(), &paths),
+        Command::Setup { dry_run } => return run_setup(&paths, dry_run),
     };
     // A running daemon does the work, so changes animate and never race it.
     let report = match daemon::request(&paths, &request)? {
         Some(Reply::Report(report)) => report,
-        Some(Reply::Error { message }) => anyhow::bail!(message),
-        Some(Reply::State(_) | Reply::Gallery(_) | Reply::Targets { .. }) => {
-            anyhow::bail!("unexpected reply from the daemon")
-        }
+        Some(_) => anyhow::bail!("unexpected reply from the daemon"),
         None => actions::execute(&paths, &request)?.report,
     };
     Ok(print_report(&report, &paths))
 }
 
-fn run_service(action: ServiceAction) -> anyhow::Result<()> {
+const fn step(direction: Direction) -> Request {
+    Request::Step { direction }
+}
+
+fn lid_preview(paths: &Paths, percent: &str) -> anyhow::Result<ExitCode> {
+    let percent = match percent.trim_end_matches('%') {
+        "off" => None,
+        value => Some(
+            value
+                .parse::<u16>()
+                .ok()
+                .filter(|p| *p <= 100)
+                .context("the preview is a percentage from 0 to 100, or `off`")?,
+        ),
+    };
+    daemon::request(paths, &Request::LidPreview { percent })?
+        .context("the lid preview needs a running daemon")?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn import(paths: &Paths, images: &[PathBuf]) -> anyhow::Result<ExitCode> {
+    let images = images
+        .iter()
+        .map(std::path::absolute)
+        .collect::<Result<Vec<_>, _>>()?;
+    let request = Request::Import {
+        paths: images.clone(),
+    };
+    if daemon::request(paths, &request)?.is_none() {
+        gallery::import(paths, &Config::load(&paths.config_file)?, &images)?;
+    }
+    let count = images.len();
+    println!(
+        "Imported {count} image{} into the library.",
+        if count == 1 { "" } else { "s" }
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn show_gallery(paths: &Paths) -> anyhow::Result<ExitCode> {
+    let gallery = match daemon::request(paths, &Request::Gallery)? {
+        Some(Reply::Gallery(gallery)) => gallery,
+        Some(_) => anyhow::bail!("unexpected reply from the daemon"),
+        None => gallery::build_blocking(
+            paths,
+            macos::current_wallpaper().ok().as_deref(),
+            macos::system_mode(),
+        )?,
+    };
+    print_gallery(&gallery);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn preview(
+    paths: &Paths,
+    image: Option<PathBuf>,
+    scheme: Option<SchemeVariant>,
+) -> anyhow::Result<ExitCode> {
+    let config = Config::load(&paths.config_file)?;
+    let image = match image {
+        Some(image) => image,
+        None => macos::current_wallpaper()?,
+    };
+    let decoded = imageio::decode(&image)
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("reading {}", image.display()))?;
+    let candidates = palette::source_candidates(&decoded);
+    let palette = Palette::from_source(
+        candidates[0],
+        scheme.unwrap_or(config.scheme),
+        config.contrast,
+    );
+    print_preview(&palette, &candidates);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_service(action: ServiceAction) -> anyhow::Result<ExitCode> {
     let describe = |running: bool| if running { "running" } else { "not running" };
     match action {
         ServiceAction::Install => {
@@ -324,11 +312,12 @@ fn run_service(action: ServiceAction) -> anyhow::Result<()> {
             }
         },
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
-fn swatch(c: Color) -> String {
-    format!("\x1b[48;2;{};{};{}m    \x1b[0m", c.r, c.g, c.b)
+/// A block of `c` in the terminal, `width` characters wide.
+fn swatch(c: Color, width: usize) -> String {
+    format!("\x1b[48;2;{};{};{}m{:width$}\x1b[0m", c.r, c.g, c.b, "")
 }
 
 fn print_report(report: &Report, paths: &Paths) -> ExitCode {
@@ -338,7 +327,7 @@ fn print_report(report: &Report, paths: &Paths) -> ExitCode {
         .map_or_else(String::new, |w| format!(" from {}", w.display()));
     println!(
         "{} {} {}{from}",
-        swatch(report.source),
+        swatch(report.source, 4),
         report.source,
         report.mode
     );
@@ -397,10 +386,7 @@ fn print_gallery(gallery: &obojeno_core::gallery::Gallery) {
         let swatches: String = if item.swatches.is_empty() {
             "········".to_owned()
         } else {
-            item.swatches
-                .iter()
-                .map(|&c| format!("\x1b[48;2;{};{};{}m  \x1b[0m", c.r, c.g, c.b))
-                .collect()
+            item.swatches.iter().map(|&c| swatch(c, 2)).collect()
         };
         let marker = if item.current { "▶" } else { " " };
         println!("  {marker} {swatches}  {}", item.path.display());
@@ -426,7 +412,7 @@ fn print_gallery(gallery: &obojeno_core::gallery::Gallery) {
 fn print_preview(palette: &Palette, candidates: &[Color]) {
     let others = candidates[1..]
         .iter()
-        .map(|&c| format!("{} {c}", swatch(c)))
+        .map(|&c| format!("{} {c}", swatch(c, 4)))
         .collect::<Vec<_>>()
         .join("  ");
     let others = if others.is_empty() {
@@ -436,7 +422,7 @@ fn print_preview(palette: &Palette, candidates: &[Color]) {
     };
     println!(
         "source  {}  {}   (scheme {}{others})",
-        swatch(palette.source),
+        swatch(palette.source, 4),
         palette.source,
         palette.variant,
     );
@@ -455,32 +441,29 @@ fn print_preview(palette: &Palette, candidates: &[Color]) {
         println!("\n{mode}");
         for role in roles {
             let c = palette.role(mode, role);
-            println!("  {}  {c}  {role}", swatch(c));
+            println!("  {}  {c}  {role}", swatch(c, 4));
         }
         let term = palette.terminal(mode);
         let row = |range: std::ops::Range<usize>| {
-            term[range].iter().map(|&c| swatch(c)).collect::<String>()
+            term[range]
+                .iter()
+                .map(|&c| swatch(c, 4))
+                .collect::<String>()
         };
         println!("  terminal  {}\n            {}", row(0..8), row(8..16));
     }
 }
 
-fn print_targets(name: Option<&str>, paths: &Paths) -> anyhow::Result<()> {
-    let config = Config::load(&paths.config_file)?;
+fn show_targets(name: Option<&str>, paths: &Paths) -> anyhow::Result<ExitCode> {
     let Some(name) = name else {
+        print_status(&setup::targets(paths)?, &BTreeSet::new(), false);
         println!(
-            "Built-in targets (enable with [targets.<name>] in {}):\n",
+            "\nTurn them on in the menu bar app, with `obojeno setup`, or with \
+             [targets.<name>] in {}.\n`obojeno targets <name>` shows what a target \
+             writes and how to set it up.",
             paths.config_file.display()
         );
-        for name in targets::BUILTIN_NAMES {
-            let enabled = config
-                .targets
-                .get(name)
-                .is_some_and(|t| t.enabled != Some(false));
-            println!("  {} {name}", if enabled { "●" } else { "○" });
-        }
-        println!("\n`obojeno targets <name>` shows what a target writes and how to set it up.");
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     };
     let target = targets::builtin(name).with_context(|| {
         format!(
@@ -511,70 +494,63 @@ fn print_targets(name: Option<&str>, paths: &Paths) -> anyhow::Result<()> {
     if let Some(snippet) = target.snippet {
         println!("\n{snippet}");
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
-fn run_setup(paths: &Paths, dry_run: bool) -> anyhow::Result<()> {
-    let config = Config::load(&paths.config_file)?;
+fn run_setup(paths: &Paths, dry_run: bool) -> anyhow::Result<ExitCode> {
     let infos = setup::targets(paths)?;
-    let change = setup::enable_found(&infos, &config);
-    let found: std::collections::BTreeSet<String> = change
+    let change = setup::enable_found(&infos, &Config::load(&paths.config_file)?);
+    let turning_on: BTreeSet<String> = change
         .targets
         .as_ref()
         .map(|t| t.keys().cloned().collect())
         .unwrap_or_default();
-    let turning_on = |name: &str| found.contains(name);
-    let width = infos.iter().map(|t| t.title.len()).max().unwrap_or(0);
-    for t in &infos {
-        let status = if turning_on(&t.name) {
-            if dry_run {
-                "found, would turn on"
-            } else {
-                "found, turned on"
-            }
-        } else if t.enabled {
-            "on"
-        } else if !t.installed {
-            "not found"
-        } else if let Some(option) = &t.missing {
-            &format!("found, needs `{option}` in the config")
-        } else {
-            "off"
-        };
-        let on = t.enabled || turning_on(&t.name);
-        println!(
-            "  {} {:width$}  {status}",
-            if on { "●" } else { "○" },
-            t.title
-        );
-    }
-    if !dry_run && change.targets.is_some() {
+    print_status(&infos, &turning_on, dry_run);
+    if !dry_run && !turning_on.is_empty() {
         let request = Request::Configure { change };
-        match daemon::request(paths, &request)? {
-            Some(Reply::Error { message }) => anyhow::bail!(message),
-            Some(_) => {}
-            None => {
-                actions::execute(paths, &request)?;
-            }
+        if daemon::request(paths, &request)?.is_none() {
+            actions::execute(paths, &request)?;
         }
     }
-    let todo: Vec<&TargetInfo> = infos
-        .iter()
-        // Steps for targets turned on now, unless already done, and for ones
-        // known to need them; not for what obojeno cannot check.
-        .filter(|t| {
-            t.snippet.is_some()
-                && match t.set_up {
-                    Some(set_up) => !set_up && (t.enabled || turning_on(&t.name)),
-                    None => turning_on(&t.name),
-                }
-        })
-        .collect();
+    // Steps for targets turned on now, unless already done, and for ones
+    // known to need them; not for what obojeno cannot check.
+    let todo = infos.iter().filter(|t| {
+        t.snippet.is_some()
+            && match t.set_up {
+                Some(set_up) => !set_up && (t.enabled || turning_on.contains(&t.name)),
+                None => turning_on.contains(&t.name),
+            }
+    });
     for t in todo {
         println!("\n{}: {}", t.title, t.setup);
         if let Some(snippet) = &t.snippet {
             println!("\n{snippet}");
         }
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
+}
+
+/// One line per target: on or off, and what was found.
+fn print_status(infos: &[TargetInfo], turning_on: &BTreeSet<String>, dry_run: bool) {
+    let width = infos.iter().map(|t| t.title.len()).max().unwrap_or(0);
+    for t in infos {
+        let now_on = turning_on.contains(&t.name);
+        let status = if now_on {
+            if dry_run {
+                "found, would turn on".to_owned()
+            } else {
+                "found, turned on".to_owned()
+            }
+        } else if t.enabled {
+            "on".to_owned()
+        } else if !t.installed {
+            "not found".to_owned()
+        } else if let Some(option) = &t.missing {
+            format!("found, needs `{option}` in the config")
+        } else {
+            "found, off".to_owned()
+        };
+        let mark = if t.enabled || now_on { "●" } else { "○" };
+        println!("  {mark} {:width$}  {status}", t.title);
+    }
 }

@@ -28,7 +28,8 @@ use objc2_quartz_core::{
 };
 use obojeno_core::config::TransitionStyle;
 
-use crate::{desktop, imageio};
+use crate::imageio;
+use crate::layers::{self, Layer};
 
 /// Time for macOS to draw the new wallpaper under the overlay before it
 /// starts to move.
@@ -70,7 +71,7 @@ pub fn set_wallpaper<T: Send>(
         .filter_map(|screen| {
             Overlay::new(&screen, &workspace, mtm)
                 .inspect_err(|e| {
-                    tracing::warn!("no transition on {}: {e:#}", screen.localizedName())
+                    tracing::warn!("no transition on {}: {e:#}", screen.localizedName());
                 })
                 .ok()
         })
@@ -124,18 +125,12 @@ impl Overlay {
         workspace: &NSWorkspace,
         mtm: MainThreadMarker,
     ) -> anyhow::Result<Self> {
-        let url = workspace
-            .desktopImageURLForScreen(screen)
-            .context("no wallpaper")?;
-        let path = url.path().context("wallpaper is not a file")?.to_string();
-        let image = imageio::cg_image(Path::new(&path)).map_err(anyhow::Error::msg)?;
+        let path = crate::macos::wallpaper_of(screen)?;
+        let image = imageio::cg_image(&path).map_err(anyhow::Error::msg)?;
 
         let frame = screen.frame();
-        let window = desktop::overlay_window(frame, desktop::Layer::Wallpaper, mtm);
-        let root = window
-            .contentView()
-            .and_then(|v| v.layer())
-            .context("window has no layer")?;
+        let window = layers::overlay_window(frame, Layer::Wallpaper, mtm);
+        let root = layers::root_layer(&window).context("window has no layer")?;
         let bounds = CGRect::new(CGPoint::new(0.0, 0.0), frame.size);
 
         CATransaction::begin();
@@ -144,7 +139,7 @@ impl Overlay {
         let layer = CALayer::new();
         layer.setFrame(bounds);
         // SAFETY: a CGImage is valid layer contents.
-        unsafe { layer.setContents(Some(cf_object(&image))) };
+        unsafe { layer.setContents(Some(layers::cf_object(&image))) };
         layer.setContentsGravity(gravity);
         layer.setContentsScale(window.backingScaleFactor());
         layer.setBackgroundColor(fill.as_deref());
@@ -217,7 +212,7 @@ impl Overlay {
         } else {
             // SAFETY: the final path is a CGPath, the shape layer's type.
             unsafe {
-                self.mask.setPath(Some(cf_cast(&to)));
+                self.mask.setPath(Some(layers::as_path(&to)));
                 self.image.setMask(Some(&self.mask));
             }
             self.mask.addAnimation_forKey(&animation, Some(key));
@@ -238,7 +233,7 @@ impl Overlay {
             CGMutablePath::add_rect(Some(&path), std::ptr::null(), self.bounds);
             CGMutablePath::add_ellipse_in_rect(Some(&path), std::ptr::null(), circle);
         }
-        retain_cf(&path)
+        layers::retain_cf(&path)
     }
 }
 
@@ -246,7 +241,7 @@ fn rect_path(rect: CGRect) -> Retained<AnyObject> {
     let path = CGMutablePath::new();
     // SAFETY: a null transform is allowed.
     unsafe { CGMutablePath::add_rect(Some(&path), std::ptr::null(), rect) };
-    retain_cf(&path)
+    layers::retain_cf(&path)
 }
 
 fn farthest_corner(bounds: CGRect, p: CGPoint) -> CGFloat {
@@ -259,7 +254,7 @@ fn farthest_corner(bounds: CGRect, p: CGPoint) -> CGFloat {
 
 /// How macOS draws the wallpaper on this screen, as a layer gravity, plus
 /// the color around images that do not cover the screen.
-pub(crate) fn scaling(
+pub fn scaling(
     workspace: &NSWorkspace,
     screen: &NSScreen,
     image: &CGImage,
@@ -288,7 +283,7 @@ pub(crate) fn scaling(
 
     let frame = screen.frame();
     let scale = screen.backingScaleFactor();
-    #[allow(clippy::cast_precision_loss)] // Image sides are far below 2^52.
+    #[expect(clippy::cast_precision_loss)] // Image sides are far below 2^52.
     let larger_than_screen = CGImage::width(Some(image)) as CGFloat > frame.size.width * scale
         || CGImage::height(Some(image)) as CGFloat > frame.size.height * scale;
     // SAFETY: the gravities are valid constants.
@@ -302,29 +297,6 @@ pub(crate) fn scaling(
         }
     };
     (gravity, fill)
-}
-
-/// A Core Foundation object seen as an Objective-C object (they are
-/// toll-free bridged).
-pub(crate) fn cf_object<T: AsRef<AnyObject>>(value: &T) -> &AnyObject {
-    value.as_ref()
-}
-
-pub(crate) fn retain_cf<T: AsRef<AnyObject>>(value: &T) -> Retained<AnyObject> {
-    let object: &AnyObject = value.as_ref();
-    // SAFETY: retaining a valid object.
-    unsafe { Retained::retain(std::ptr::from_ref(object).cast_mut()) }.expect("non-null")
-}
-
-/// The reverse of [`retain_cf`] for paths created there.
-///
-/// # Safety
-///
-/// `object` must be a `CGPath`.
-unsafe fn cf_cast(object: &AnyObject) -> &objc2_core_graphics::CGPath {
-    // SAFETY: guaranteed by the caller; CF and Objective-C objects share
-    // their representation.
-    unsafe { &*std::ptr::from_ref(object).cast() }
 }
 
 #[cfg(test)]

@@ -104,22 +104,16 @@ mod tests {
 
     #[test]
     fn decodes_heic() {
-        let dir = tempfile::tempdir().unwrap();
-        let heic = dir.path().join("w.heic");
-        let status = std::process::Command::new("sips")
-            .args(["-s", "format", "heic"])
-            .arg(Path::new(FIXTURES).join("lagoon.png"))
-            .arg("--out")
-            .arg(&heic)
-            .output()
-            .unwrap()
-            .status;
-        assert!(status.success());
+        // Made with `sips -s format heic` from the core's lagoon.png fixture.
+        let heic = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/lagoon.heic"
+        ));
         assert!(
-            obojeno_core::palette::open_image(&heic).is_err(),
+            obojeno_core::palette::open_image(heic).is_err(),
             "precondition: pure Rust cannot"
         );
-        let image = decode(&heic).unwrap();
+        let image = decode(heic).unwrap();
         assert_eq!((image.width(), image.height()), (160, 100));
     }
 

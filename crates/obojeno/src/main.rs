@@ -212,16 +212,21 @@ fn print_report(report: &Report, paths: &Paths) -> ExitCode {
 }
 
 fn print_preview(palette: &Palette, candidates: &[Color]) {
+    let others = candidates[1..]
+        .iter()
+        .map(|&c| format!("{} {c}", swatch(c)))
+        .collect::<Vec<_>>()
+        .join("  ");
+    let others = if others.is_empty() {
+        String::new()
+    } else {
+        format!("; other candidates: {others}")
+    };
     println!(
-        "source  {}  {}   (scheme {}; other candidates: {})",
+        "source  {}  {}   (scheme {}{others})",
         swatch(palette.source),
         palette.source,
         palette.variant,
-        candidates[1..]
-            .iter()
-            .map(|&c| format!("{} {c}", swatch(c)))
-            .collect::<Vec<_>>()
-            .join("  ")
     );
     let roles = [
         "primary",

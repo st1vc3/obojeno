@@ -29,7 +29,12 @@ struct SettingsView: View {
                 ToggleRow(
                     "Show in Dock",
                     isOn: Binding(get: { model.showInDock }, set: { model.showInDock = $0 }))
+                RowDivider()
+                ToggleRow(
+                    "Check for updates automatically",
+                    isOn: Binding(get: { model.updater.automatic }, set: { model.updater.automatic = $0 }))
             }
+            Caption("obojeno \(model.updater.currentVersion)")
 
             SectionTitle("Theme")
             SettingsGroup {

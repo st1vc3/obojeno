@@ -32,6 +32,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
-      - run: ./scripts/build-app.sh
-      - run: codesign --verify --strict target/Obojeno.app
+      # Universal, as releases are built.
+      - run: UNIVERSAL=1 ./scripts/build-app.sh
+      - run: codesign --verify --strict --deep target/Obojeno.app
+      - run: |
+          lipo -verify_arch arm64 x86_64 target/Obojeno.app/Contents/MacOS/Obojeno
+          lipo -verify_arch arm64 x86_64 target/Obojeno.app/Contents/Helpers/obojeno
+      - run: swift test --package-path app
+      - name: Cask style
+        run: |
+          ./scripts/cask.sh 0.0.0 "$(printf '0%.0s' {1..64})" > "$RUNNER_TEMP/obojeno.rb"
+          brew style "$RUNNER_TEMP/obojeno.rb"

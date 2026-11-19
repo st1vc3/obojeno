@@ -54,7 +54,9 @@ struct DaemonClient: Sendable {
         return AsyncStream { continuation in
             let control = SubscriptionControl()
             let thread = Thread {
-                var connected = false
+                // Nil until the first attempt, so a daemon that isn't
+                // running at launch is reported too, not only lost ones.
+                var connected: Bool?
                 while !control.isCancelled {
                     if let connection = try? Connection(path: socketPath),
                         control.attach(connection),
@@ -66,7 +68,7 @@ struct DaemonClient: Sendable {
                             continuation.yield(.reply(reply))
                         }
                     }
-                    if connected {
+                    if connected != false {
                         connected = false
                         continuation.yield(.connected(false))
                     }

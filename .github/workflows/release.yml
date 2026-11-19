@@ -1,0 +1,108 @@
+name: Release
+
+# Push a tag like v0.2.0 (matching the version in Cargo.toml) to publish
+# Obojeno.app as a GitHub release.
+#
+# Optional secrets:
+#   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD  Developer ID Application
+#     certificate as base64 .p12, and its password: sign with it
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD  notarize (needs the above)
+#   TAP_TOKEN  a token that can push to st1vc3/homebrew-tap: update the cask
+# Without them the app is signed ad hoc and the cask is left alone.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the tag against Cargo.toml
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $version in Cargo.toml"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Import the signing certificate
+        if: env.APPLE_CERTIFICATE != ''
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(uuidgen)"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity="$(security find-identity -v -p codesigning "$keychain" \
+            | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)"
+          echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: UNIVERSAL=1 ./scripts/build-app.sh
+
+      - name: Verify
+        run: |
+          codesign --verify --strict --deep target/Obojeno.app
+          lipo -verify_arch arm64 x86_64 target/Obojeno.app/Contents/MacOS/Obojeno
+          lipo -verify_arch arm64 x86_64 target/Obojeno.app/Contents/Helpers/obojeno
+          test "$(target/Obojeno.app/Contents/Helpers/obojeno --version)" = "obojeno $VERSION"
+
+      - name: Notarize
+        if: env.SIGN_IDENTITY != '' && env.APPLE_ID != ''
+        run: |
+          ditto -c -k --keepParent target/Obojeno.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+          xcrun stapler staple target/Obojeno.app
+          echo "NOTARIZED=--notarized" >> "$GITHUB_ENV"
+
+      - name: Package
+        run: |
+          mkdir dist
+          zip="dist/Obojeno-$VERSION.zip"
+          ditto -c -k --sequesterRsrc --keepParent target/Obojeno.app "$zip"
+          (cd dist && shasum -a 256 "Obojeno-$VERSION.zip" > "Obojeno-$VERSION.zip.sha256")
+          echo "SHA256=$(cut -d' ' -f1 "dist/Obojeno-$VERSION.zip.sha256")" >> "$GITHUB_ENV"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "obojeno $VERSION" --generate-notes
+
+      - name: Update the Homebrew cask
+        if: env.TAP_TOKEN != ''
+        run: |
+          git clone "https://x-access-token:$TAP_TOKEN@github.com/st1vc3/homebrew-tap.git" "$RUNNER_TEMP/tap"
+          mkdir -p "$RUNNER_TEMP/tap/Casks"
+          ./scripts/cask.sh "$VERSION" "$SHA256" ${NOTARIZED:-} > "$RUNNER_TEMP/tap/Casks/obojeno.rb"
+          brew style "$RUNNER_TEMP/tap/Casks/obojeno.rb"
+          cd "$RUNNER_TEMP/tap"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/obojeno.rb
+          git commit -m "obojeno $VERSION"
+          git push

@@ -28,6 +28,7 @@ struct PopoverView: View {
                     .frame(height: PopoverSize.contentHeight + 44)
                 } else {
                     Header(showSettings: { withAnimation(.snappy) { showingSettings = true } })
+                    UpdateBanner()
                     GalleryView()
                 }
                 if let error = model.error {
@@ -98,6 +99,10 @@ private struct Header: View {
                 Button("Previous Wallpaper") { model.step(.previous) }
                 Button("Random Wallpaper") { model.step(.random) }
                 Divider()
+                Button("Check for Updates…") {
+                    Task { await model.updater.check(userInitiated: true) }
+                }
+                .disabled(model.updater.checking)
                 Button("Quit obojeno") { NSApp.terminate(nil) }
                     .keyboardShortcut("q")
             } label: {
@@ -108,6 +113,74 @@ private struct Header: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .help("More")
+    }
+}
+
+/// A newer release, or how a check the user asked for went.
+private struct UpdateBanner: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let updater = model.updater
+        if let release = updater.available {
+            Banner(symbol: "arrow.down.circle.fill", dismiss: updater.dismiss) {
+                Text("obojeno \(release.version) is available").font(.callout.weight(.semibold))
+                Text(hint).font(.caption).foregroundStyle(.secondary)
+            } actions: {
+                switch InstallMethod.current {
+                case .homebrew:
+                    Button("Copy Command") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(Updater.brewCommand, forType: .string)
+                    }
+                    .help(Updater.brewCommand)
+                case .nix:
+                    Button("Release Notes") { NSWorkspace.shared.open(release.page) }
+                case .download:
+                    Button("Download") { NSWorkspace.shared.open(release.page) }
+                }
+            }
+        } else if let message = updater.message {
+            Banner(symbol: "checkmark.circle.fill", dismiss: updater.dismiss) {
+                Text(message).font(.callout)
+            } actions: {
+                EmptyView()
+            }
+        }
+    }
+
+    private var hint: String {
+        switch InstallMethod.current {
+        case .homebrew: "Update with: \(Updater.brewCommand)"
+        case .nix: "Update the obojeno flake input and rebuild."
+        case .download: "Download it from GitHub."
+        }
+    }
+}
+
+private struct Banner<Message: View, Actions: View>: View {
+    let symbol: String
+    let dismiss: () -> Void
+    @ViewBuilder let text: Message
+    @ViewBuilder let actions: Actions
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol).font(.title3)
+            VStack(alignment: .leading, spacing: 2) { text }
+            Spacer(minLength: 8)
+            actions.buttonStyle(CapsuleButtonStyle())
+            Button(action: dismiss) {
+                Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
+            }
+            .buttonStyle(.plain)
+            .opacity(0.7)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .transition(.opacity.combined(with: .move(edge: .top)))
     }
 }
 

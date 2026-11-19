@@ -50,10 +50,13 @@ final class AppModel {
     private(set) var openAtLogin = SMAppService.mainApp.status == .enabled
 
     let shortcuts = Shortcuts()
+    let updater = Updater()
     private let hint = ShortcutHint()
 
     private let client = DaemonClient()
     private var subscription: Task<Void, Never>?
+    /// The daemon is started once if it isn't running when the app opens.
+    private var triedStarting = false
 
     init() {
         applyDockPolicy()
@@ -88,7 +91,14 @@ final class AppModel {
 
     private func connectionChanged(_ connected: Bool) {
         self.connected = connected
-        if connected { refreshGallery() }
+        if connected {
+            refreshGallery()
+        } else if !triedStarting, Snapshot.requested == nil {
+            // Installed without a login agent (Homebrew, a download): the
+            // app brings its own daemon. A second daemon just exits.
+            triedStarting = true
+            startDaemon()
+        }
     }
 
     private func receive(_ reply: Reply) {

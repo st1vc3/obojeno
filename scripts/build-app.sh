@@ -2,6 +2,11 @@
 # Builds target/Obojeno.app: the menu bar app with the obojeno command
 # (CLI and daemon) inside it. Needs cargo (e.g. `nix develop`) and swift
 # (Xcode or the Command Line Tools).
+#
+#   UNIVERSAL=1        build for Apple silicon and Intel (needs rustup with
+#                      both targets, and Xcode for swift)
+#   SIGN_IDENTITY=...  sign with this Developer ID (hardened runtime, secure
+#                      timestamp) instead of ad hoc
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -14,13 +19,25 @@ swift() {
 
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)"
 
-cargo build --release --locked --package obojeno --manifest-path "$root/Cargo.toml"
-swift build --configuration release --package-path "$root/app"
-
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers"
-cp "$(swift build --configuration release --package-path "$root/app" --show-bin-path)/Obojeno" "$app/Contents/MacOS/Obojeno"
-cp "$root/target/release/obojeno" "$app/Contents/Helpers/obojeno"
+
+if [[ "${UNIVERSAL:-}" == 1 ]]; then
+  binaries=()
+  for target in aarch64-apple-darwin x86_64-apple-darwin; do
+    cargo build --release --locked --package obojeno --target "$target" --manifest-path "$root/Cargo.toml"
+    binaries+=("$root/target/$target/release/obojeno")
+  done
+  lipo -create -output "$app/Contents/Helpers/obojeno" "${binaries[@]}"
+  swift_arch=(--arch arm64 --arch x86_64)
+else
+  cargo build --release --locked --package obojeno --manifest-path "$root/Cargo.toml"
+  cp "$root/target/release/obojeno" "$app/Contents/Helpers/obojeno"
+  swift_arch=()
+fi
+swift build --configuration release ${swift_arch[@]+"${swift_arch[@]}"} --product Obojeno --package-path "$root/app"
+cp "$(swift build --configuration release ${swift_arch[@]+"${swift_arch[@]}"} --package-path "$root/app" --show-bin-path)/Obojeno" \
+  "$app/Contents/MacOS/Obojeno"
 
 cat >"$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -41,7 +58,12 @@ cat >"$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc signatures, inside out. Release builds re-sign with a Developer ID.
-codesign --force --sign - "$app/Contents/Helpers/obojeno"
-codesign --force --sign - "$app"
+# Inside out: the helper first, then the bundle that seals it.
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+  sign=(--sign "$SIGN_IDENTITY" --options runtime --timestamp)
+else
+  sign=(--sign -)
+fi
+codesign --force "${sign[@]}" "$app/Contents/Helpers/obojeno"
+codesign --force "${sign[@]}" "$app"
 echo "built $app"

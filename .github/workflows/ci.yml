@@ -44,7 +44,7 @@ jobs:
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
-      - run: swift format lint --strict -r app/Sources app/Tests
+      - run: swift format lint --strict -r app/Sources app/Tests app/Icon
       # Universal, as releases are built; the script verifies the result.
       - run: UNIVERSAL=1 ./scripts/build-app.sh
       - run: swift test --package-path app

@@ -26,7 +26,7 @@ feed="${FEED_URL:-https://github.com/st1vc3/obojeno/releases/latest/download/app
 public_key="W5G9/wImPmjFC9KBMw1gqgWpEiBnbsFmDW/zDvXTz1M="
 
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Frameworks"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Frameworks" "$app/Contents/Resources"
 
 if [[ "${UNIVERSAL:-}" == 1 ]]; then
   binaries=()
@@ -49,6 +49,16 @@ ditto "$bin/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
 rm -rf "$app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" \
   "$app/Contents/Frameworks/Sparkle.framework/XPCServices"
 
+# The icon, drawn by app/Icon/icon.swift at every size macOS asks for.
+iconset="$(mktemp -d)/AppIcon.iconset"
+mkdir "$iconset"
+for side in 16 32 128 256 512; do
+  swift "$root/app/Icon/icon.swift" "$iconset/icon_${side}x${side}.png" "$side"
+  swift "$root/app/Icon/icon.swift" "$iconset/icon_${side}x${side}@2x.png" "$((side * 2))"
+done
+iconutil --convert icns --output "$app/Contents/Resources/AppIcon.icns" "$iconset"
+rm -rf "$(dirname "$iconset")"
+
 cat >"$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -58,6 +68,7 @@ cat >"$app/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>Obojeno</string>
   <key>CFBundleDisplayName</key><string>Obojeno</string>
   <key>CFBundleExecutable</key><string>Obojeno</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$version</string>
   <key>CFBundleVersion</key><string>$version</string>

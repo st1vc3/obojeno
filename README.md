@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/icon.png" width="128" alt="The obojeno icon: a fan of color swatches"></p>
+
 # obojeno
 
 Wallpaper-driven Material You theming for macOS, like

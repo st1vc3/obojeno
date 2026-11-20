@@ -33,6 +33,7 @@ quit the app (or `pkill -f "obojeno.*daemon"`) and start the new one.
 | `crates/obojeno-core/templates` | The built-in targets' templates |
 | `crates/obojeno` | The macOS binary: CLI, daemon, wallpaper transitions, lid animation, finish, app reloads |
 | `app` | The SwiftUI menu bar app; a client of the daemon's socket |
+| `app/Icon/icon.swift` | Draws the app icon; the build renders it (and `docs/icon.png` is a copy at 256 px) |
 | `nix`, `flake.nix` | Nix package and home-manager module |
 | `scripts` | Building the app, the Homebrew cask, version checks |
 
@@ -47,7 +48,7 @@ CI runs these; run them first:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-swift format lint --strict -r app/Sources app/Tests
+swift format lint --strict -r app/Sources app/Tests app/Icon
 swift test --package-path app
 shellcheck scripts/*.sh
 actionlint                                   # the GitHub workflows

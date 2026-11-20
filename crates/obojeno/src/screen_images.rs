@@ -84,6 +84,9 @@ pub fn refresh(mtm: MainThreadMarker) {
             true
         });
         if start {
+            if layers::is_builtin(&screen) {
+                lid_view::wallpaper_changed(&path);
+            }
             std::thread::spawn(move || {
                 let decoded = LayerPixels::decode(&path, side).and_then(|pixels| {
                     let small = pixels.scaled(SMALL_SIDE)?.to_rgba();

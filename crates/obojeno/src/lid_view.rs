@@ -3,7 +3,7 @@
 //! wallpaper blurs and sinks toward the bottom. `lid` feeds it the progress.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
@@ -193,9 +193,19 @@ fn show(t: f64, mtm: MainThreadMarker) {
             return;
         }
         if !lid.visible {
-            lid.window.orderFrontRegardless();
             lid.curtain_window.orderFrontRegardless();
             lid.visible = true;
+        }
+        // The wallpaper part only with the current wallpaper's picture:
+        // until it is ready, the desktop shows through under the curtain,
+        // never the previous wallpaper.
+        let ready = lid.showing.is_some();
+        if ready != lid.window.isVisible() {
+            if ready {
+                lid.window.orderFrontRegardless();
+            } else {
+                lid.window.orderOut(None);
+            }
         }
         CATransaction::begin();
         // Every frame comes smoothed from the sensor; implicit animations
@@ -348,6 +358,23 @@ pub fn wallpaper_ready(mtm: MainThreadMarker) {
         }
         CATransaction::commit();
         lid.showing = Some(path);
+        if lid.visible {
+            // Joins the curtain mid-movement.
+            lid.window.orderFrontRegardless();
+        }
+    });
+}
+
+/// The built-in screen's wallpaper is now `path`: forgets the picture of
+/// another one, so the lid never shows a previous wallpaper while the new
+/// one is decoded.
+pub fn wallpaper_changed(path: &Path) {
+    LID.with_borrow_mut(|lid| {
+        if let Some(lid) = lid.window.as_mut()
+            && lid.showing.as_deref() != Some(path)
+        {
+            lid.showing = None;
+        }
     });
 }
 

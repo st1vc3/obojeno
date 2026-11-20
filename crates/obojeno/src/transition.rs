@@ -14,7 +14,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSColor, NSEvent, NSImageScaling, NSScreen,
-    NSWindow, NSWorkspace, NSWorkspaceDesktopImageAllowClippingKey,
+    NSWindow, NSWindowAnimationBehavior, NSWorkspace, NSWorkspaceDesktopImageAllowClippingKey,
     NSWorkspaceDesktopImageFillColorKey, NSWorkspaceDesktopImageScalingKey,
 };
 use objc2_core_foundation::{CFRunLoop, CGFloat, CGPoint, CGRect, CGSize, kCFRunLoopDefaultMode};
@@ -137,6 +137,10 @@ impl Overlay {
 
         let frame = screen.frame();
         let window = layers::overlay_window(frame, Layer::Wallpaper, mtm);
+        // It must cover the wallpaper exactly from the first frame: macOS's
+        // own animation would zoom it in, shifting the old wallpaper as the
+        // transition starts.
+        window.setAnimationBehavior(NSWindowAnimationBehavior::None);
         let root = layers::root_layer(&window).context("window has no layer")?;
         let bounds = CGRect::new(CGPoint::new(0.0, 0.0), frame.size);
 

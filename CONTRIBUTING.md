@@ -10,7 +10,8 @@ You need macOS 26 or later and Xcode (or the Command Line Tools) with Swift
 6.2, for the menu bar app. For Rust, either use Nix:
 
 ```sh
-nix develop      # rustc, cargo, clippy, rustfmt, rust-analyzer, cargo-insta
+nix develop      # rustc, cargo, clippy, rustfmt, rust-analyzer, cargo-insta,
+                 # cargo-deny, shellcheck, actionlint
 ```
 
 or install Rust 1.97 or later with rustup.

@@ -17,7 +17,7 @@
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           inputsFrom = [ self.packages.${pkgs.stdenv.hostPlatform.system}.obojeno ];
-          packages = with pkgs; [ clippy rustfmt rust-analyzer cargo-insta ];
+          packages = with pkgs; [ clippy rustfmt rust-analyzer cargo-insta cargo-deny shellcheck actionlint ];
         };
       });
 

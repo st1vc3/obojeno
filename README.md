@@ -61,10 +61,41 @@ top and the wallpaper blurs and sinks, following the lid as it moves:
 brew install --cask st1vc3/tap/obojeno
 ```
 
-This installs `Obojeno.app` and the `obojeno` command. Open the app once:
-it starts the daemon, lives in the menu bar, and welcomes you with the apps
-it found on your Mac to choose from. Turn on **Open at login** in its
-settings.
+This installs `Obojeno.app` and the `obojeno` command, ready to open with
+no security prompt. Open the app once: it starts the daemon, lives in the menu
+bar, and welcomes you with the apps it found on your Mac to choose from. Turn
+on **Open at login** in its settings.
+
+### Download
+
+For Apple silicon and Intel Macs.
+
+1. Download `Obojeno-<version>.zip` from the
+   [latest release](https://github.com/st1vc3/obojeno/releases/latest) and
+   unzip it (Finder does it on double-click).
+2. Move `Obojeno.app` to `/Applications`.
+3. Open it. The app is free and not notarized by Apple, so the first time
+   macOS says it cannot check it. Open **System Settings → Privacy &
+   Security**, scroll down and click **Open Anyway** next to Obojeno, then
+   confirm. Or, in Terminal:
+
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/Obojeno.app
+   ```
+
+   Then it starts like the Homebrew one does: turn on **Open at login** in
+   its settings.
+
+The `obojeno` command is inside the app. To use it in a terminal, link it
+into your `PATH`:
+
+```sh
+sudo mkdir -p /usr/local/bin
+sudo ln -sf /Applications/Obojeno.app/Contents/Helpers/obojeno /usr/local/bin/obojeno
+```
+
+The app does not update itself: it tells you when a new release is out
+(Homebrew installs update with `brew upgrade`).
 
 ### Nix (flake and Home Manager)
 
@@ -222,7 +253,16 @@ may control it. Switching between light and dark needs no permission.
 
 ```sh
 brew uninstall --cask obojeno            # --zap also removes config and caches
-obojeno service uninstall                # if installed without Homebrew
+```
+
+Without Homebrew: if you ran `obojeno service install`, run
+`obojeno service uninstall` first. Then quit the app (**⋯ → Quit obojeno**),
+move it to the Trash, and remove what it left behind:
+
+```sh
+pkill -f "obojeno.*daemon"               # the daemon keeps running after the app quits
+sudo rm -f /usr/local/bin/obojeno        # if you linked the command
+rm -rf ~/.cache/obojeno ~/.config/obojeno ~/.local/state/obojeno ~/Library/Logs/obojeno.log*
 ```
 
 Your library in `~/Pictures/obojeno` is left alone.

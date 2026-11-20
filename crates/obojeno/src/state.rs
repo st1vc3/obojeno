@@ -8,16 +8,14 @@ use obojeno_core::Color;
 use obojeno_core::output::write_if_changed;
 use serde::{Deserialize, Serialize};
 
+use crate::imageio::EXTRACTION_VERSION;
+
 /// Source colors of recently used wallpapers, by content hash, so re-applying
 /// never decodes an image twice. Bounded; oldest entries are dropped.
 const MAX_CACHED_COLORS: usize = 256;
 
 /// Wallpapers remembered for the gallery's recent row.
 const MAX_HISTORY: usize = 30;
-
-/// Bumped when source colors change: core's extraction version, plus one
-/// for decoding through ImageIO.
-const EXTRACTION_VERSION: u32 = obojeno_core::palette::EXTRACTION_VERSION * 100 + 1;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]

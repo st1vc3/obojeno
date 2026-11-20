@@ -242,12 +242,15 @@ pub fn source_color(image: &DynamicImage) -> Color {
 
 /// Ranked source color candidates, best first. Never empty.
 pub fn source_candidates(image: &DynamicImage) -> Vec<Color> {
-    let small = imageops::resize(
-        &image.to_rgba8(),
-        SAMPLE_SIZE,
-        SAMPLE_SIZE,
-        FilterType::Triangle,
-    );
+    // Decoders mostly give RGBA already; copying a 6K image costs 145 MB.
+    let converted;
+    let rgba = if let DynamicImage::ImageRgba8(rgba) = image {
+        rgba
+    } else {
+        converted = image.to_rgba8();
+        &converted
+    };
+    let small = imageops::resize(rgba, SAMPLE_SIZE, SAMPLE_SIZE, FilterType::Triangle);
     let pixels: Vec<Rgb> = small
         .pixels()
         .filter(|p| p.0[3] == u8::MAX)

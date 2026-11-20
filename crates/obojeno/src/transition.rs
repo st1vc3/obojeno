@@ -18,17 +18,16 @@ use objc2_app_kit::{
     NSWorkspaceDesktopImageFillColorKey, NSWorkspaceDesktopImageScalingKey,
 };
 use objc2_core_foundation::{CFRunLoop, CGFloat, CGPoint, CGRect, CGSize, kCFRunLoopDefaultMode};
-use objc2_core_graphics::{CGImage, CGMutablePath};
+use objc2_core_graphics::{CGColor, CGMutablePath};
 use objc2_foundation::{NSNumber, NSString, ns_string};
 use objc2_quartz_core::{
-    CABasicAnimation, CALayer, CALayerContentsGravity, CAMediaTiming as _, CAMediaTimingFunction,
-    CAShapeLayer, CATransaction, kCAFillModeForwards, kCAFillRuleEvenOdd, kCAGravityCenter,
-    kCAGravityResize, kCAGravityResizeAspect, kCAGravityResizeAspectFill,
-    kCAMediaTimingFunctionEaseInEaseOut,
+    CABasicAnimation, CALayer, CAMediaTiming as _, CAMediaTimingFunction, CAShapeLayer,
+    CATransaction, kCAFillModeForwards, kCAFillRuleEvenOdd, kCAGravityCenter, kCAGravityResize,
+    kCAGravityResizeAspect, kCAGravityResizeAspectFill, kCAMediaTimingFunctionEaseInEaseOut,
 };
 use obojeno_core::config::TransitionStyle;
 
-use crate::imageio;
+use crate::imageio::{self, LayerPixels};
 use crate::layers::{self, Layer};
 
 /// Time for macOS to draw the new wallpaper under the overlay before it
@@ -89,7 +88,7 @@ pub fn set_wallpaper<T: Send>(
         CATransaction::flush();
         pump(options.duration + Duration::from_millis(50));
         for overlay in &overlays {
-            overlay.window.close();
+            overlay.dispose();
         }
         theming.join()
     });
@@ -126,7 +125,15 @@ impl Overlay {
         mtm: MainThreadMarker,
     ) -> anyhow::Result<Self> {
         let path = crate::macos::wallpaper_of(screen)?;
-        let image = imageio::cg_image(&path).map_err(anyhow::Error::msg)?;
+        let placement = Placement::of(workspace, screen, &path)?;
+        // Decoded ahead of time, unless the last change was just now.
+        let image = match crate::screen_images::with(screen, |shown| shown.image.clone()) {
+            Some(image) => image,
+            None => LayerPixels::decode(&path, placement.needed_side())
+                .map_err(anyhow::Error::msg)?
+                .into_surface()
+                .context("cannot show the wallpaper")?,
+        };
 
         let frame = screen.frame();
         let window = layers::overlay_window(frame, Layer::Wallpaper, mtm);
@@ -135,14 +142,12 @@ impl Overlay {
 
         CATransaction::begin();
         CATransaction::setDisableActions(true);
-        let (gravity, fill) = scaling(workspace, screen, &image);
         let layer = CALayer::new();
         layer.setFrame(bounds);
-        // SAFETY: a CGImage is valid layer contents.
+        // SAFETY: an IOSurface is valid layer contents.
         unsafe { layer.setContents(Some(layers::cf_object(&image))) };
-        layer.setContentsGravity(gravity);
+        placement.apply(&layer);
         layer.setContentsScale(window.backingScaleFactor());
-        layer.setBackgroundColor(fill.as_deref());
         let mask = CAShapeLayer::new();
         mask.setFrame(bounds);
         // SAFETY: the rule is a valid constant.
@@ -220,6 +225,27 @@ impl Overlay {
         CATransaction::commit();
     }
 
+    /// Closes the window and lets go of the old wallpaper. Clearing the
+    /// layers first matters: Core Animation keeps its own copy of their
+    /// images for as long as the layer tree lives, which can outlast the
+    /// window, and that copy is the size of the screen.
+    fn dispose(&self) {
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        self.mask.removeAllAnimations();
+        self.image.removeAllAnimations();
+        // SAFETY: no mask and no contents are valid values.
+        unsafe {
+            self.image.setMask(None);
+            self.image.setContents(None);
+        }
+        self.image.removeFromSuperlayer();
+        CATransaction::commit();
+        self.window.orderOut(None);
+        self.window.setContentView(None);
+        self.window.close();
+    }
+
     /// The whole screen minus a circle: with even-odd filling, the old
     /// wallpaper stays visible outside the circle only.
     fn with_hole(&self, center: CGPoint, radius: CGFloat) -> Retained<AnyObject> {
@@ -252,56 +278,127 @@ fn farthest_corner(bounds: CGRect, p: CGPoint) -> CGFloat {
         .fold(0.0, CGFloat::max)
 }
 
-/// How macOS draws the wallpaper on this screen, as a layer gravity, plus
-/// the color around images that do not cover the screen.
-pub fn scaling(
-    workspace: &NSWorkspace,
-    screen: &NSScreen,
-    image: &CGImage,
-) -> (
-    &'static CALayerContentsGravity,
-    Option<Retained<objc2_core_graphics::CGColor>>,
-) {
-    let options = workspace.desktopImageOptionsForScreen(screen);
-    let get = |key: &NSString| options.as_ref().and_then(|o| o.objectForKey(key));
-    // SAFETY: the keys are valid AppKit constants.
-    let (scaling_key, clipping_key, fill_key) = unsafe {
-        (
-            NSWorkspaceDesktopImageScalingKey,
-            NSWorkspaceDesktopImageAllowClippingKey,
-            NSWorkspaceDesktopImageFillColorKey,
-        )
-    };
-    let number = |key| get(key).and_then(|o| o.downcast::<NSNumber>().ok());
-    let scaling = number(scaling_key).map_or(NSImageScaling::ScaleProportionallyUpOrDown, |n| {
-        NSImageScaling(n.unsignedIntegerValue())
-    });
-    let clipping = number(clipping_key).is_none_or(|n| n.boolValue());
-    let fill = get(fill_key)
-        .and_then(|o| o.downcast::<NSColor>().ok())
-        .map(|c| c.CGColor());
+/// How macOS draws a wallpaper on a screen: its scaling options, the color
+/// around images that do not cover the screen, and the sizes involved.
+pub struct Placement {
+    scaling: Scaling,
+    fill: Option<Retained<CGColor>>,
+    /// The image's size and the screen's, in pixels.
+    image: CGSize,
+    screen: CGSize,
+}
 
-    let frame = screen.frame();
-    let scale = screen.backingScaleFactor();
-    #[expect(clippy::cast_precision_loss)] // Image sides are far below 2^52.
-    let larger_than_screen = CGImage::width(Some(image)) as CGFloat > frame.size.width * scale
-        || CGImage::height(Some(image)) as CGFloat > frame.size.height * scale;
-    // SAFETY: the gravities are valid constants.
-    let gravity = unsafe {
-        match scaling {
-            NSImageScaling::ScaleProportionallyUpOrDown if clipping => kCAGravityResizeAspectFill,
-            NSImageScaling::ScaleProportionallyUpOrDown => kCAGravityResizeAspect,
-            NSImageScaling::ScaleAxesIndependently => kCAGravityResize,
-            NSImageScaling::ScaleProportionallyDown if larger_than_screen => kCAGravityResizeAspect,
-            _ => kCAGravityCenter,
-        }
+/// The ways macOS fits a wallpaper to a screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scaling {
+    /// Covers the screen, cropping the overflow.
+    Fill,
+    /// Fits in the screen, with the fill color around it.
+    Fit,
+    Stretch,
+    /// At its own size, in the middle.
+    Center,
+}
+
+impl Placement {
+    /// For the image at `path` on `screen`. Reads the image's size without
+    /// decoding it.
+    pub fn of(workspace: &NSWorkspace, screen: &NSScreen, path: &Path) -> anyhow::Result<Self> {
+        let (width, height) = imageio::size(path).map_err(anyhow::Error::msg)?;
+        let image = CGSize::new(CGFloat::from(width), CGFloat::from(height));
+        let options = workspace.desktopImageOptionsForScreen(screen);
+        let get = |key: &NSString| options.as_ref().and_then(|o| o.objectForKey(key));
+        // SAFETY: the keys are valid AppKit constants.
+        let (scaling_key, clipping_key, fill_key) = unsafe {
+            (
+                NSWorkspaceDesktopImageScalingKey,
+                NSWorkspaceDesktopImageAllowClippingKey,
+                NSWorkspaceDesktopImageFillColorKey,
+            )
+        };
+        let number = |key| get(key).and_then(|o| o.downcast::<NSNumber>().ok());
+        let ns_scaling = number(scaling_key)
+            .map_or(NSImageScaling::ScaleProportionallyUpOrDown, |n| {
+                NSImageScaling(n.unsignedIntegerValue())
+            });
+        let clipping = number(clipping_key).is_none_or(|n| n.boolValue());
+        let frame = screen.frame();
+        let scale = screen.backingScaleFactor();
+        let screen_px = CGSize::new(frame.size.width * scale, frame.size.height * scale);
+        let larger_than_screen = image.width > screen_px.width || image.height > screen_px.height;
+        let scaling = match ns_scaling {
+            NSImageScaling::ScaleProportionallyUpOrDown if clipping => Scaling::Fill,
+            NSImageScaling::ScaleProportionallyUpOrDown => Scaling::Fit,
+            NSImageScaling::ScaleAxesIndependently => Scaling::Stretch,
+            NSImageScaling::ScaleProportionallyDown if larger_than_screen => Scaling::Fit,
+            _ => Scaling::Center,
+        };
+        let fill = get(fill_key)
+            .and_then(|o| o.downcast::<NSColor>().ok())
+            .map(|c| c.CGColor());
+        Ok(Self {
+            scaling,
+            fill,
+            image,
+            screen: screen_px,
+        })
+    }
+
+    /// Draws a layer's contents like macOS draws the wallpaper.
+    pub fn apply(&self, layer: &CALayer) {
+        // SAFETY: the gravities are valid constants.
+        let gravity = unsafe {
+            match self.scaling {
+                Scaling::Fill => kCAGravityResizeAspectFill,
+                Scaling::Fit => kCAGravityResizeAspect,
+                Scaling::Stretch => kCAGravityResize,
+                Scaling::Center => kCAGravityCenter,
+            }
+        };
+        layer.setContentsGravity(gravity);
+        layer.setBackgroundColor(self.fill.as_deref());
+    }
+
+    /// The longest side the image is shown at: decoding it any larger only
+    /// costs memory.
+    pub fn needed_side(&self) -> u32 {
+        needed_side(self.scaling, self.image, self.screen)
+    }
+}
+
+fn needed_side(scaling: Scaling, image: CGSize, screen: CGSize) -> u32 {
+    let (x, y) = (screen.width / image.width, screen.height / image.height);
+    let scale = match scaling {
+        // Both sides must reach the screen's.
+        Scaling::Fill | Scaling::Stretch => x.max(y),
+        Scaling::Fit => x.min(y),
+        Scaling::Center => 1.0,
     };
-    (gravity, fill)
+    // Never above the image's own size: scaling up adds no detail.
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Positive pixel sizes.
+    let side = (image.width.max(image.height) * scale.min(1.0)).round() as u32;
+    side.max(1)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_only_as_large_as_shown() {
+        let screen = CGSize::new(3456.0, 2234.0);
+        let six_k = CGSize::new(6016.0, 6016.0);
+        // A square filling a wide screen is shown as wide as the screen.
+        assert_eq!(needed_side(Scaling::Fill, six_k, screen), 3456);
+        assert_eq!(needed_side(Scaling::Fit, six_k, screen), 2234);
+        assert_eq!(needed_side(Scaling::Center, six_k, screen), 6016);
+        // A panorama filling the screen needs its full height on screen.
+        let panorama = CGSize::new(12000.0, 2000.0);
+        assert_eq!(needed_side(Scaling::Fill, panorama, screen), 12000);
+        // Small images are never asked for larger than they are.
+        let small = CGSize::new(800.0, 600.0);
+        assert_eq!(needed_side(Scaling::Fill, small, screen), 800);
+    }
 
     #[test]
     fn farthest_corner_covers_the_screen() {

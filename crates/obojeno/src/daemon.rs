@@ -23,7 +23,9 @@ use obojeno_core::{Mode, Palette};
 use crate::apply::{self, Applied};
 use crate::paths::Paths;
 use crate::state::{Source, State};
-use crate::{actions, desktop, gallery, lid, lid_view, macos, setup, watch};
+use crate::{
+    actions, desktop, gallery, imageio, lid, lid_view, macos, screen_images, setup, watch,
+};
 
 /// Work for the main thread.
 pub enum Job {
@@ -91,6 +93,7 @@ pub fn run(paths: Paths) -> anyhow::Result<()> {
         return Ok(());
     }
     let listener = bind(&socket)?;
+    imageio::decode_in_helpers();
     tracing::info!(
         "obojeno {} listening on {}",
         env!("CARGO_PKG_VERSION"),
@@ -112,8 +115,10 @@ pub fn run(paths: Paths) -> anyhow::Result<()> {
         .name("obojeno-socket".into())
         .spawn(move || accept(&listener))?;
 
-    daemon().gallery.lock().expect("gallery lock").index =
-        Index::load(&gallery::index_file(&daemon().paths));
+    daemon().gallery.lock().expect("gallery lock").index = Index::load(
+        &gallery::index_file(&daemon().paths),
+        imageio::EXTRACTION_VERSION,
+    );
     let _watchers = watch::start(&daemon().paths.config_file)?;
     // Before the first theme, so a broken config shows up as an apply error.
     if let Ok(config) = Config::load(&daemon().paths.config_file) {
@@ -169,25 +174,31 @@ fn drain() {
     loop {
         let job = daemon().jobs.lock().expect("jobs lock").pop_front();
         let Some(job) = job else { break };
-        match job {
-            Job::Request(request, reply) => {
-                let response = handle(request);
-                let _ = reply.send(response);
+        // Objects AppKit hands out autoreleased go when the job is done, not
+        // when the run loop next drains its pool.
+        objc2::rc::autoreleasepool(|_| run_job(job));
+    }
+    DRAINING.set(false);
+}
+
+fn run_job(job: Job) {
+    match job {
+        Job::Request(request, reply) => {
+            let response = handle(request);
+            let _ = reply.send(response);
+        }
+        Job::Change(change) => {
+            if let Err(e) = handle_change(change) {
+                tracing::warn!("{change:?} change: {e:#}");
             }
-            Job::Change(change) => {
-                if let Err(e) = handle_change(change) {
-                    tracing::warn!("{change:?} change: {e:#}");
-                }
-            }
-            Job::Indexed(path, result) => indexed(path, result),
-            Job::WarmGallery => {
-                if let Err(e) = gallery_now() {
-                    tracing::warn!("gallery: {e:#}");
-                }
+        }
+        Job::Indexed(path, result) => indexed(path, result),
+        Job::WarmGallery => {
+            if let Err(e) = gallery_now() {
+                tracing::warn!("gallery: {e:#}");
             }
         }
     }
-    DRAINING.set(false);
 }
 
 fn handle(request: Request) -> Reply {
@@ -244,6 +255,7 @@ fn handle_change(change: Change) -> anyhow::Result<()> {
         Change::Space => {
             if let Some(mtm) = MainThreadMarker::new() {
                 desktop::screens_changed(mtm);
+                screen_images::refresh(mtm);
             }
             let config = Config::load(&daemon().paths.config_file)?;
             let shown = macos::current_wallpaper()?;
@@ -303,8 +315,9 @@ fn publish(applied: &Applied, config: &Config) {
     );
     if let Some(mtm) = MainThreadMarker::new() {
         desktop::apply_settings(config.finish, config.lid_animation, mtm);
-        // Ready before the lid moves, so it never waits on decoding.
-        lid_view::prepare(mtm);
+        // Ready before the next transition or lid movement, so neither
+        // waits on decoding.
+        screen_images::refresh(mtm);
     }
     *daemon().current.lock().expect("state lock") = Some(state.clone());
     *daemon().config_text.lock().expect("config lock") =
@@ -371,15 +384,22 @@ fn gallery_now() -> anyhow::Result<Gallery> {
     Ok(gallery)
 }
 
-/// Indexes images on a few background threads, reporting each result to the
-/// main thread.
+/// Images indexed at once in the background. Indexing decodes each image at
+/// full size (over 100 MB for a 6K wallpaper), so one at a time keeps the
+/// daemon's memory near a single image; nobody waits on it.
+const INDEX_WORKERS: usize = 1;
+/// Results gathered before subscribers get the gallery again.
+const ANNOUNCE_EVERY: usize = 4;
+
+/// Indexes images on background threads, reporting each result to the main
+/// thread.
 fn start_indexing(todo: Vec<PathBuf>) {
     let queue = Mutex::new(todo);
     let spawned = std::thread::Builder::new()
         .name("obojeno-index".into())
         .spawn(move || {
             std::thread::scope(|scope| {
-                for _ in 0..gallery::parallelism() {
+                for _ in 0..INDEX_WORKERS {
                     scope.spawn(|| {
                         loop {
                             let next = queue.lock().expect("queue lock").pop();
@@ -417,7 +437,7 @@ fn indexed(path: PathBuf, result: Result<IndexEntry, String>) {
     }
     work.unannounced += 1;
     // Batch updates while many images finish at once.
-    let announce = work.indexing.is_empty() || work.unannounced >= gallery::parallelism();
+    let announce = work.indexing.is_empty() || work.unannounced >= ANNOUNCE_EVERY;
     if announce {
         work.unannounced = 0;
     }

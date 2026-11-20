@@ -4,19 +4,13 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
-use image::codecs::jpeg::JpegEncoder;
 use obojeno_core::config::Config;
 use obojeno_core::gallery::{Fingerprint, Folder, Gallery, Index, IndexEntry, Item, scan};
-use obojeno_core::output::{Wallpaper, write_if_changed};
-use obojeno_core::{Mode, Palette, palette};
+use obojeno_core::{Mode, Palette};
 
-use crate::imageio;
 use crate::paths::Paths;
 use crate::state::State;
-
-/// Longest side of gallery thumbnails: sharp in a grid at 2x.
-const THUMBNAIL_SIDE: u32 = 512;
-const THUMBNAIL_QUALITY: u8 = 85;
+use crate::{analyze, imageio};
 
 /// Roles shown as a swatch strip under each thumbnail.
 const SWATCH_ROLES: [&str; 4] = ["primary", "secondary", "tertiary", "surface_container_high"];
@@ -149,7 +143,7 @@ pub fn import(paths: &Paths, config: &Config, images: &[PathBuf]) -> anyhow::Res
     std::fs::create_dir_all(&library).with_context(|| format!("creating {}", library.display()))?;
     let mut imported = Vec::new();
     for image in images {
-        imageio::cg_image(image)
+        imageio::size(image)
             .map_err(anyhow::Error::msg)
             .with_context(|| format!("{} is not an image macOS can show", image.display()))?;
         let target = free_name(&library, image)?;
@@ -206,26 +200,16 @@ fn folder_problem(e: &std::io::Error) -> String {
     }
 }
 
-/// Makes the thumbnail and finds the source color of one image. Slow (a full
-/// decode); run it off the main thread.
+/// Makes the thumbnail and finds the source color of one image, in a
+/// helper process (a full-size decode). Slow; run it off the main thread.
 pub fn index_image(paths: &Paths, path: &Path) -> Result<IndexEntry, String> {
     let fingerprint = Fingerprint::of(path).map_err(|e| e.to_string())?;
-    let wallpaper = Wallpaper::open_with(path, imageio::decode).map_err(|e| e.to_string())?;
-    let source = palette::source_color(wallpaper.image().map_err(str::to_owned)?);
-
     let thumbnail = thumbnail_dir(paths).join(format!("{}.jpg", fingerprint.file_stem(path)));
-    let small = imageio::thumbnail(path, THUMBNAIL_SIDE)?;
-    let mut jpeg = Vec::new();
-    JpegEncoder::new_with_quality(&mut jpeg, THUMBNAIL_QUALITY)
-        .encode_image(&small.to_rgb8())
-        .map_err(|e| e.to_string())?;
-    write_if_changed(&thumbnail, &jpeg)
-        .map_err(|e| format!("writing {}: {e}", thumbnail.display()))?;
-
+    let analysis = analyze::in_helper(path, Some(&thumbnail))?;
     Ok(IndexEntry {
         fingerprint,
-        key: wallpaper.key,
-        source,
+        key: analysis.key,
+        source: analysis.source,
         thumbnail,
     })
 }
@@ -239,7 +223,7 @@ pub fn build_blocking(
     let config = Config::load(&paths.config_file)?;
     let mut state = State::load(&paths.state_file());
     let file = index_file(paths);
-    let mut index = Index::load(&file);
+    let mut index = Index::load(&file, imageio::EXTRACTION_VERSION);
     let (_, missing) = build(paths, &config, &state, &mut index, current, mode);
     let results: Vec<_> = std::thread::scope(|scope| {
         let workers = parallelism();
@@ -277,9 +261,9 @@ pub fn build_blocking(
     Ok(gallery)
 }
 
-/// Half the cores: indexing runs in the background and should not make the
-/// machine sluggish.
-pub fn parallelism() -> usize {
+/// Half the cores, for indexing someone waits on (the CLI): fast, without
+/// making the machine sluggish.
+fn parallelism() -> usize {
     std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).max(1))
 }
 

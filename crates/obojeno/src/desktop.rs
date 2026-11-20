@@ -9,11 +9,13 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSScreen, NSWindow};
 use objc2_core_foundation::{CFRetained, CGFloat, CGPoint, CGRect, CGSize};
-use objc2_core_graphics::{CGColorSpace, CGImage, CGImageAlphaInfo, CGMutablePath};
-use objc2_quartz_core::{CALayer, CAShapeLayer, CATransaction, kCAFilterNearest};
+use objc2_core_graphics::CGMutablePath;
+use objc2_quartz_core::{
+    CALayer, CAReplicatorLayer, CAShapeLayer, CATransaction, CATransform3D, kCAFilterNearest,
+};
 use obojeno_core::config::Finish;
 
-use crate::imageio::{self, Bitmap};
+use crate::imageio::LayerPixels;
 use crate::layers::{self, Layer};
 use crate::lid_view;
 
@@ -67,23 +69,9 @@ fn finish_window(screen: &NSScreen, finish: Finish, mtm: MainThreadMarker) -> Re
     if let Some(root) = layers::root_layer(&window) {
         CATransaction::begin();
         CATransaction::setDisableActions(true);
-        let scale = screen.backingScaleFactor();
-        let noise = (finish.grain > 0.0)
-            .then(|| noise_image(bounds.size, scale))
-            .flatten();
-        if let Some(noise) = noise {
-            let grain = CALayer::new();
-            grain.setFrame(bounds);
-            // One noise pixel per device pixel: no tiling, no scaling.
-            // SAFETY: a CGImage is valid layer contents.
-            unsafe { grain.setContents(Some(layers::cf_object(&noise))) };
-            grain.setContentsScale(scale);
-            // SAFETY: the filter name is a valid constant.
-            grain.setMagnificationFilter(unsafe { kCAFilterNearest });
-            // Full strength is a quarter-opaque noise layer; more turns the
-            // wallpaper to static.
-            #[expect(clippy::cast_possible_truncation)] // An opacity.
-            grain.setOpacity((finish.grain.clamp(0.0, 1.0) * 0.25) as f32);
+        if finish.grain > 0.0
+            && let Some(grain) = grain_layer(bounds, screen.backingScaleFactor(), finish.grain)
+        {
             root.addSublayer(&grain);
         }
         if finish.corner_radius > 0.0 {
@@ -139,42 +127,72 @@ fn corner_path(size: CGSize, radius: CGFloat, top_too: bool) -> CFRetained<CGMut
     path
 }
 
-/// Grayscale noise the size of a screen in device pixels. Each value is
-/// the mean of two random bytes, which clusters them around mid-gray for a
-/// softer, film-like grain than uniform noise.
-fn noise_image(size: CGSize, scale: CGFloat) -> Option<CFRetained<CGImage>> {
-    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Screen sizes.
-    let (width, height) = (
-        (size.width * scale).round() as usize,
-        (size.height * scale).round() as usize,
-    );
-    let mut pixels = vec![0u8; width * height];
+/// The side of the grain's noise tile in device pixels: large enough that
+/// its repeats go unnoticed, and a fraction of a screen-sized image.
+const GRAIN_TILE: usize = 1024;
+
+/// Noise over `bounds`, one noise pixel per device pixel: a tile of it,
+/// repeated across and down by replicator layers, which all show the same
+/// surface. `strength` is 0 to 1.
+fn grain_layer(bounds: CGRect, scale: CGFloat, strength: f64) -> Option<Retained<CALayer>> {
+    let surface = LayerPixels::from_gray(GRAIN_TILE, GRAIN_TILE, &noise(GRAIN_TILE * GRAIN_TILE))
+        .into_surface()?;
+    #[expect(clippy::cast_precision_loss)] // A small size.
+    let side = GRAIN_TILE as CGFloat / scale;
+    let tile = CALayer::new();
+    tile.setFrame(CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(side, side)));
+    // SAFETY: an IOSurface is valid layer contents.
+    unsafe { tile.setContents(Some(layers::cf_object(&surface))) };
+    tile.setContentsScale(scale);
+    // SAFETY: the filter name is a valid constant.
+    tile.setMagnificationFilter(unsafe { kCAFilterNearest });
+    // Full strength is quarter-opaque noise; more turns the wallpaper to
+    // static. On the tile, as the tiles never overlap: on a container it
+    // would make Core Animation draw them offscreen first.
+    #[expect(clippy::cast_possible_truncation)] // An opacity.
+    tile.setOpacity((strength.clamp(0.0, 1.0) * 0.25) as f32);
+
+    let row = CAReplicatorLayer::new();
+    row.setFrame(bounds);
+    row.setInstanceCount(tiles(bounds.size.width, side));
+    row.setInstanceTransform(CATransform3D::new_translation(side, 0.0, 0.0));
+    row.addSublayer(&tile);
+    let grid = CAReplicatorLayer::new();
+    grid.setFrame(bounds);
+    grid.setInstanceCount(tiles(bounds.size.height, side));
+    grid.setInstanceTransform(CATransform3D::new_translation(0.0, side, 0.0));
+    grid.addSublayer(&row);
+    Some(Retained::into_super(grid))
+}
+
+/// How many tiles of `side` it takes to cover `length`.
+fn tiles(length: CGFloat, side: CGFloat) -> isize {
+    #[expect(clippy::cast_possible_truncation)] // Screen sizes.
+    let count = (length / side).ceil() as isize;
+    count.max(1)
+}
+
+/// `len` grayscale noise values. Each is the mean of two random bytes,
+/// which clusters them around mid-gray for a softer, film-like grain than
+/// uniform noise.
+fn noise(len: usize) -> Vec<u8> {
     // xorshift: any decent noise will do, and it needs no dependency.
     let mut x: u32 = 0x9E37_79B9;
-    for px in &mut pixels {
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        let [a, b, ..] = x.to_le_bytes();
-        *px = a.midpoint(b);
-    }
-    let gray = CGColorSpace::new_device_gray()?;
-    imageio::image_from_pixels(
-        &mut pixels,
-        Bitmap {
-            width,
-            height,
-            bytes_per_row: width,
-            color_space: Some(&gray),
-            info: CGImageAlphaInfo::None.0,
-        },
-    )
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            let [a, b, ..] = x.to_le_bytes();
+            a.midpoint(b)
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use objc2_core_graphics::{CGBitmapContextCreate, CGContext};
+    use objc2_core_graphics::{CGBitmapContextCreate, CGColorSpace, CGContext, CGImageAlphaInfo};
 
     /// Renders the corner masks into a `w`×`h` alpha bitmap (row 0 at the
     /// bottom, like the layer).
@@ -242,8 +260,19 @@ mod tests {
     }
 
     #[test]
-    fn noise_is_screen_sized_and_empty_screens_have_none() {
-        assert!(noise_image(CGSize::new(4.0, 3.0), 2.0).is_some());
-        assert!(noise_image(CGSize::new(0.0, 3.0), 2.0).is_none());
+    fn grain_tiles_cover_the_screen() {
+        // A 3456x2234 pixel screen at 2x, in 512 point tiles.
+        assert_eq!(tiles(1728.0, 512.0), 4);
+        assert_eq!(tiles(1117.0, 512.0), 3);
+        assert_eq!(tiles(1024.0, 512.0), 2, "exactly");
+        assert_eq!(tiles(0.0, 512.0), 1, "at least one");
+    }
+
+    #[test]
+    fn noise_clusters_around_mid_gray() {
+        let values = noise(64 * 64);
+        let mean = values.iter().map(|&v| f64::from(v)).sum::<f64>() / 4096.0;
+        assert!((mean - 127.5).abs() < 4.0, "{mean}");
+        assert!(values.iter().any(|&v| v < 64) && values.iter().any(|&v| v > 192));
     }
 }

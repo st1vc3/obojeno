@@ -3,7 +3,7 @@
 //! wallpaper blurs and sinks toward the bottom. `lid` feeds it the progress.
 
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
@@ -14,9 +14,11 @@ use objc2_quartz_core::{
     CAGradientLayer, CALayer, CATransaction, CATransform3D, kCAGradientLayerRadial,
 };
 
-use crate::imageio::{self, Bitmap};
+use crate::imageio::{self, Bitmap, LayerPixels};
 use crate::layers::{self, Layer};
-use crate::{macos, transition};
+use crate::screen_images;
+use crate::transition::Placement;
+use image::RgbaImage;
 
 /// How much of the top and sides the soft edges fade out.
 const FEATHER: CGFloat = 0.2;
@@ -27,10 +29,9 @@ const FEATHER_BOTTOM: CGFloat = 0.05;
 const FEATHER_W: usize = 320;
 const FEATHER_H: usize = 200;
 
-/// Blur strengths of the two blurred copies, in pixels at `BLUR_WIDTH`.
+/// Blur strengths of the two blurred copies, in pixels of the small copy
+/// `screen_images` keeps (`SMALL_SIDE` long).
 const BLURS: [f32; 2] = [3.0, 9.0];
-/// Blurred copies are this wide: blurry anyway, so small and cheap.
-const BLUR_WIDTH: u32 = 480;
 
 struct LidWindow {
     window: Retained<NSWindow>,
@@ -49,9 +50,8 @@ struct LidWindow {
     /// Darkens the edges of the screen.
     vignette: Retained<CAGradientLayer>,
     shade: Retained<CALayer>,
-    /// The wallpaper the layers show, and one being prepared.
+    /// The wallpaper the layers show.
     showing: Option<PathBuf>,
-    loading: Option<PathBuf>,
     visible: bool,
 }
 
@@ -78,6 +78,7 @@ pub fn rebuild(enabled: bool, mtm: MainThreadMarker) {
             lid.window = layers::builtin_screen(mtm).and_then(|screen| lid_window(&screen, mtm));
         }
     });
+    wallpaper_ready(mtm);
 }
 
 /// Shows the effect at `percent` regardless of the sensor, or follows the
@@ -169,16 +170,15 @@ fn lid_window(screen: &NSScreen, mtm: MainThreadMarker) -> Option<LidWindow> {
         vignette,
         shade,
         showing: None,
-        loading: None,
         visible: false,
     })
 }
 
 /// Shows the effect at progress `t`, 0 open to 1 shut.
 fn show(t: f64, mtm: MainThreadMarker) {
-    if t > 0.0 && LID.with_borrow(|lid| lid.window.as_ref().is_some_and(|w| !w.visible)) {
-        // Usually prepared when the wallpaper changed already.
-        prepare(mtm);
+    if t > 0.0 && LID.with_borrow(|lid| lid.window.as_ref().is_some_and(|w| w.showing.is_none())) {
+        // Usually decoded when the wallpaper changed already.
+        screen_images::refresh(mtm);
     }
     LID.with_borrow_mut(|lid| {
         let Some(lid) = lid.window.as_mut() else {
@@ -297,100 +297,63 @@ fn feather_frame(bounds: CGRect, t: CGFloat) -> CGRect {
     )
 }
 
-/// Loads the built-in screen's wallpaper and its blurred copies into the
-/// lid layers, decoding on a background thread, unless they show it already.
-pub fn prepare(mtm: MainThreadMarker) {
+/// Shows the built-in screen's wallpaper in the lid layers once
+/// `screen_images` has it decoded, with its blurred copies.
+pub fn wallpaper_ready(mtm: MainThreadMarker) {
     let Some(screen) = layers::builtin_screen(mtm) else {
         return;
     };
-    let Ok(path) = macos::wallpaper_of(&screen) else {
+    let needed = LID.with_borrow(|lid| lid.window.as_ref().map(|w| w.showing.clone()));
+    let Some(showing) = needed else {
+        return; // The lid animation is off.
+    };
+    let ready = screen_images::with(&screen, |shown| {
+        (showing.as_ref() != Some(&shown.path)).then(|| {
+            (
+                shown.path.clone(),
+                shown.image.clone(),
+                blurred(&shown.small),
+            )
+        })
+    })
+    .flatten();
+    let Some((path, sharp, [soft, softer])) = ready else {
         return;
     };
-    let start = LID.with_borrow_mut(|lid| {
-        let Some(lid) = lid.window.as_mut() else {
-            return false;
-        };
-        if lid.showing.as_ref() == Some(&path) || lid.loading.as_ref() == Some(&path) {
-            return false;
+    let placement = match Placement::of(&NSWorkspace::sharedWorkspace(), &screen, &path) {
+        Ok(placement) => placement,
+        Err(e) => {
+            tracing::warn!("lid animation: {e:#}");
+            return;
         }
-        lid.loading = Some(path.clone());
-        true
-    });
-    if !start {
+    };
+    let (Some(soft), Some(softer)) = (soft.into_surface(), softer.into_surface()) else {
         return;
-    }
-    let frame = screen.frame();
-    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Screen sizes.
-    let max_side =
-        (frame.size.width.max(frame.size.height) * screen.backingScaleFactor()).round() as u32;
-    std::thread::spawn(move || {
-        let images = images(&path, max_side);
-        dispatch2::DispatchQueue::main().exec_async(move || {
-            if let Some(mtm) = MainThreadMarker::new() {
-                install(&path, images, mtm);
-            }
-        });
-    });
-}
-
-/// The wallpaper at screen size and its blurred copies.
-fn images(path: &Path, max_side: u32) -> Result<[image::RgbaImage; 3], String> {
-    let sharp = imageio::thumbnail(path, max_side)?.to_rgba8();
-    let height = (u64::from(sharp.height()) * u64::from(BLUR_WIDTH)
-        / u64::from(sharp.width().max(1)))
-    .max(1);
-    let small = image::imageops::resize(
-        &sharp,
-        BLUR_WIDTH,
-        u32::try_from(height).unwrap_or(1),
-        image::imageops::FilterType::Triangle,
-    );
-    let [soft, softer] = BLURS.map(|sigma| image::imageops::blur(&small, sigma));
-    Ok([sharp, soft, softer])
-}
-
-fn install(path: &Path, images: Result<[image::RgbaImage; 3], String>, mtm: MainThreadMarker) {
-    let screen = layers::builtin_screen(mtm);
+    };
     LID.with_borrow_mut(|lid| {
         let Some(lid) = lid.window.as_mut() else {
             return;
         };
-        if lid.loading.as_deref() != Some(path) {
-            return; // Replaced by a newer wallpaper.
-        }
-        lid.loading = None;
-        let images = match images {
-            Ok(images) => images,
-            Err(e) => {
-                tracing::warn!("lid animation: {}: {e}", path.display());
-                return;
-            }
-        };
-        let (Some(cg), Some(screen)) = (
-            images
-                .iter()
-                .map(imageio::cg_image_from)
-                .collect::<Option<Vec<_>>>(),
-            screen,
-        ) else {
-            return;
-        };
-        // All three are scaled like macOS draws the wallpaper.
-        let (gravity, fill) = transition::scaling(&NSWorkspace::sharedWorkspace(), &screen, &cg[0]);
         CATransaction::begin();
         CATransaction::setDisableActions(true);
-        for (layer, image) in [&lid.wallpaper, &lid.soft, &lid.softer]
-            .into_iter()
-            .zip(&cg)
-        {
-            // SAFETY: a CGImage is valid layer contents.
+        for (layer, image) in [
+            (&lid.wallpaper, &sharp),
+            (&lid.soft, &soft),
+            (&lid.softer, &softer),
+        ] {
+            // SAFETY: an IOSurface is valid layer contents.
             unsafe { layer.setContents(Some(layers::cf_object(image))) };
-            layer.setContentsGravity(gravity);
-            layer.setBackgroundColor(fill.as_deref());
+            // All three are drawn like macOS draws the wallpaper.
+            placement.apply(layer);
         }
         CATransaction::commit();
-        lid.showing = Some(path.to_path_buf());
+        lid.showing = Some(path);
     });
+}
+
+/// The two blurred copies of the wallpaper, from its small copy.
+fn blurred(small: &RgbaImage) -> [LayerPixels; 2] {
+    BLURS.map(|sigma| LayerPixels::from_rgba(&image::imageops::blur(small, sigma)))
 }
 
 #[cfg(test)]
@@ -433,13 +396,12 @@ mod tests {
     }
 
     #[test]
-    fn images_are_the_wallpaper_and_two_small_blurs() {
-        let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../obojeno-core/tests/fixtures/ember.png");
-        let [sharp, soft, softer] = images(&path, 120).expect("decodes");
-        assert_eq!(sharp.dimensions(), (120, 75));
-        assert_eq!(soft.width(), BLUR_WIDTH);
-        assert_eq!(soft.dimensions(), softer.dimensions());
-        assert!(imageio::cg_image_from(&soft).is_some());
+    fn blurs_keep_the_small_copy_size() {
+        let small = RgbaImage::from_pixel(48, 30, image::Rgba([200, 30, 60, 255]));
+        let [soft, softer] = blurred(&small);
+        for blur in [soft, softer] {
+            let surface = blur.into_surface().expect("a surface");
+            assert_eq!((surface.width(), surface.height()), (48, 30));
+        }
     }
 }

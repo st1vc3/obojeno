@@ -59,12 +59,16 @@ pub struct Wallpaper {
     pub key: String,
     decode: Decoder,
     image: OnceCell<Result<DynamicImage, String>>,
+    /// A smaller version, for outputs that need no full-size pixels.
+    reduced: OnceCell<Result<DynamicImage, String>>,
 }
 
-/// Turns an image file into pixels. Platforms can plug in their own codecs.
-pub type Decoder = fn(&Path) -> Result<DynamicImage, String>;
+/// Turns an image file into pixels: at full size, or given a minimum side,
+/// as small as the platform can decode it while keeping its longest side at
+/// least that long. Platforms can plug in their own codecs.
+pub type Decoder = fn(&Path, Option<u32>) -> Result<DynamicImage, String>;
 
-fn decode_with_image_crate(path: &Path) -> Result<DynamicImage, String> {
+fn decode_with_image_crate(path: &Path, _min_side: Option<u32>) -> Result<DynamicImage, String> {
     crate::palette::open_image(path).map_err(|e| e.to_string())
 }
 
@@ -90,6 +94,7 @@ impl Wallpaper {
             key: hex(&hasher.finalize()),
             decode,
             image: OnceCell::new(),
+            reduced: OnceCell::new(),
         })
     }
 
@@ -100,12 +105,26 @@ impl Wallpaper {
             key: key.to_owned(),
             decode: decode_with_image_crate,
             image: OnceCell::from(Ok(image)),
+            reduced: OnceCell::new(),
         }
     }
 
+    /// The image at full size, which source colors are found in.
     pub fn image(&self) -> Result<&DynamicImage, &str> {
         self.image
-            .get_or_init(|| (self.decode)(&self.path))
+            .get_or_init(|| (self.decode)(&self.path, None))
+            .as_ref()
+            .map_err(String::as_str)
+    }
+
+    /// The image with its longest side at least `side` long: the full one if
+    /// it is decoded already, else a smaller and much cheaper one.
+    pub fn image_at_least(&self, side: u32) -> Result<&DynamicImage, &str> {
+        if let Some(Ok(full)) = self.image.get() {
+            return Ok(full);
+        }
+        self.reduced
+            .get_or_init(|| (self.decode)(&self.path, Some(side)))
             .as_ref()
             .map_err(String::as_str)
     }
@@ -152,8 +171,9 @@ fn blurred_wallpaper(
     if path.exists() && std::fs::read_to_string(&marker).is_ok_and(|k| k == wallpaper.key) {
         return Ok(Vec::new());
     }
+    // Twice the blur's width keeps the downscale smooth.
     let image = wallpaper
-        .image()
+        .image_at_least(blur.width.saturating_mul(2))
         .map_err(|e| format!("decoding {}: {e}", wallpaper.path.display()))?;
     let jpeg =
         blurred_jpeg(image, blur.width, blur.sigma, blur.quality).map_err(|e| e.to_string())?;
@@ -573,8 +593,9 @@ mod tests {
         let same = Wallpaper {
             path: "/nonexistent.jpg".into(),
             key: "aaa".to_owned(),
-            decode: |_| panic!("must not decode"),
+            decode: |_, _| panic!("must not decode"),
             image: OnceCell::new(),
+            reduced: OnceCell::new(),
         };
         let rendered = render("[targets.simple-bar]", &dirs, &palette, Some(&same));
         assert_eq!(blur_files(&rendered), 0);
@@ -603,6 +624,30 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
         assert!(w.image().is_err(), "not an image");
+    }
+
+    #[test]
+    fn reduced_images_are_decoded_only_when_the_full_one_is_not() {
+        #[expect(clippy::unnecessary_wraps)] // A `Decoder`, which can fail.
+        fn sized(_: &Path, min_side: Option<u32>) -> Result<DynamicImage, String> {
+            let side = min_side.unwrap_or(4000);
+            Ok(DynamicImage::new_rgb8(side, side / 2))
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("w.bin");
+        std::fs::write(&path, b"abc").unwrap();
+
+        let w = Wallpaper::open_with(&path, sized).unwrap();
+        assert_eq!(w.image_at_least(1800).unwrap().width(), 1800, "reduced");
+        assert_eq!(w.image().unwrap().width(), 4000, "full when asked for");
+
+        let w = Wallpaper::open_with(&path, sized).unwrap();
+        w.image().unwrap();
+        assert_eq!(
+            w.image_at_least(1800).unwrap().width(),
+            4000,
+            "the full one when already decoded"
+        );
     }
 
     #[test]

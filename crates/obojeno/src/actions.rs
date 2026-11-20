@@ -62,7 +62,7 @@ fn set_wallpaper(
     let path = std::fs::canonicalize(path)
         .with_context(|| format!("{} does not exist", path.display()))?;
     // Fail before touching the desktop if it is not an image.
-    imageio::cg_image(&path)
+    imageio::size(&path)
         .map_err(anyhow::Error::msg)
         .with_context(|| format!("{} is not a readable image", path.display()))?;
     let config = Config::load(&paths.config_file)?;

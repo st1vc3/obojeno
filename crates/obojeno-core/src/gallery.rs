@@ -139,14 +139,15 @@ pub struct Index {
 }
 
 impl Index {
-    /// Loads the index; one made by an older extraction starts over.
-    pub fn load(path: &Path) -> Self {
+    /// Loads the index; one made by another `version` of color extraction
+    /// (which includes how the platform decodes images) starts over.
+    pub fn load(path: &Path, version: u32) -> Self {
         std::fs::read(path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok())
-            .filter(|index| index.version == crate::palette::EXTRACTION_VERSION)
+            .filter(|index| index.version == version)
             .unwrap_or_else(|| Self {
-                version: crate::palette::EXTRACTION_VERSION,
+                version,
                 entries: BTreeMap::new(),
             })
     }
@@ -227,7 +228,7 @@ mod tests {
         std::fs::write(&image, b"one").unwrap();
         std::fs::write(&thumb, b"").unwrap();
         let fingerprint = Fingerprint::of(&image).unwrap();
-        let mut index = Index::load(&dir.path().join("none.json"));
+        let mut index = Index::load(&dir.path().join("none.json"), 7);
         index.entries.insert(
             image.clone(),
             IndexEntry {
@@ -248,7 +249,11 @@ mod tests {
 
         let path = dir.path().join("index.json");
         index.save(&path).unwrap();
-        assert_eq!(Index::load(&path), index);
+        assert_eq!(Index::load(&path, 7), index);
+        assert!(
+            Index::load(&path, 8).entries.is_empty(),
+            "another extraction version starts over"
+        );
 
         index.retain(|_| false);
         assert!(index.entries.is_empty());

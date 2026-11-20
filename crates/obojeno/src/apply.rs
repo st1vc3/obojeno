@@ -7,9 +7,10 @@ use obojeno_core::config::Config;
 use obojeno_core::ipc::{Outcome, Report, TargetReport};
 use obojeno_core::output::{self, Wallpaper, write_if_changed};
 use obojeno_core::template::Renderer;
-use obojeno_core::{Color, Mode, Palette, palette};
+use obojeno_core::{Color, Mode, Palette};
 use serde::Serialize;
 
+use crate::analyze;
 use crate::paths::Paths;
 use crate::reload;
 use crate::state::{Source, State};
@@ -101,10 +102,9 @@ fn source_color(wallpaper: &Wallpaper, state: &mut State) -> anyhow::Result<Colo
     if let Some(color) = state.cached_color(&wallpaper.key) {
         return Ok(color);
     }
-    let image = wallpaper
-        .image()
-        .map_err(|e| anyhow::anyhow!("decoding {}: {e}", wallpaper.path.display()))?;
-    let color = palette::source_color(image);
+    let color = analyze::in_helper(&wallpaper.path, None)
+        .map_err(|e| anyhow::anyhow!("decoding {}: {e}", wallpaper.path.display()))?
+        .source;
     state.cache_color(&wallpaper.key, color);
     Ok(color)
 }

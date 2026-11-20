@@ -1,10 +1,12 @@
 mod actions;
+mod analyze;
 mod apply;
 mod daemon;
 mod desktop;
 mod detect;
 mod gallery;
 mod imageio;
+mod large_alloc;
 mod layers;
 mod lid;
 mod lid_view;
@@ -12,6 +14,7 @@ mod macos;
 mod paths;
 mod programs;
 mod reload;
+mod screen_images;
 mod service;
 mod setup;
 mod state;
@@ -30,6 +33,9 @@ use obojeno_core::targets::{self, OutputKind};
 use obojeno_core::{Color, Mode, Palette, SchemeVariant, palette};
 
 use crate::paths::Paths;
+
+#[global_allocator]
+static ALLOCATOR: large_alloc::Allocator = large_alloc::Allocator;
 
 /// Wallpaper-driven theming for macOS.
 #[derive(Parser)]
@@ -105,6 +111,26 @@ enum Command {
     /// Run in the background: follow wallpaper and appearance changes, and
     /// serve the menu bar app
     Daemon,
+    /// Find an image's source color (and make its gallery thumbnail): the
+    /// daemon's helper process, printing JSON
+    #[command(hide = true)]
+    Analyze {
+        image: PathBuf,
+        #[arg(long)]
+        thumbnail: Option<PathBuf>,
+    },
+    /// Decode an image's pixels into a file and print their size: the
+    /// daemon's helper process
+    #[command(name = "decode-pixels", hide = true)]
+    DecodePixels {
+        image: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        min_side: Option<u32>,
+        #[arg(long)]
+        bgra: bool,
+    },
     /// Show the palette of an image (default: the current wallpaper)
     Preview {
         image: Option<PathBuf>,
@@ -203,6 +229,23 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Import { images } => return import(&paths, &images),
         Command::Service { action } => return run_service(action),
         Command::Daemon => return daemon::run(paths).map(|()| ExitCode::SUCCESS),
+        Command::DecodePixels {
+            image,
+            out,
+            min_side,
+            bgra,
+        } => {
+            let (width, height) =
+                imageio::write_pixels(&image, min_side, bgra, &out).map_err(anyhow::Error::msg)?;
+            println!("{width} {height}");
+            return Ok(ExitCode::SUCCESS);
+        }
+        Command::Analyze { image, thumbnail } => {
+            let analysis =
+                analyze::analyze(&image, thumbnail.as_ref()).map_err(anyhow::Error::msg)?;
+            println!("{}", serde_json::to_string(&analysis)?);
+            return Ok(ExitCode::SUCCESS);
+        }
         Command::Gallery => return show_gallery(&paths),
         Command::Preview { image, scheme } => return preview(&paths, image, scheme),
         Command::Targets { name } => return show_targets(name.as_deref(), &paths),
@@ -280,7 +323,7 @@ fn preview(
         Some(image) => image,
         None => macos::current_wallpaper()?,
     };
-    let decoded = imageio::decode(&image)
+    let decoded = imageio::decode(&image, None)
         .map_err(anyhow::Error::msg)
         .with_context(|| format!("reading {}", image.display()))?;
     let candidates = palette::source_candidates(&decoded);

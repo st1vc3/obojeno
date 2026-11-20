@@ -74,13 +74,18 @@ pub fn root_layer(window: &NSWindow) -> Option<Retained<CALayer>> {
     window.contentView().and_then(|view| view.layer())
 }
 
-/// Whether a screen is a MacBook's built-in display.
-pub fn is_builtin(screen: &NSScreen) -> bool {
+/// The screen's display ID, which stays the same while it is attached.
+pub fn display_id(screen: &NSScreen) -> Option<u32> {
     screen
         .deviceDescription()
         .objectForKey(ns_string!("NSScreenNumber"))
         .and_then(|n| n.downcast::<NSNumber>().ok())
-        .is_some_and(|n| CGDisplayIsBuiltin(n.unsignedIntValue()))
+        .map(|n| n.unsignedIntValue())
+}
+
+/// Whether a screen is a MacBook's built-in display.
+pub fn is_builtin(screen: &NSScreen) -> bool {
+    display_id(screen).is_some_and(|id| CGDisplayIsBuiltin(id))
 }
 
 /// The MacBook's built-in display, when attached.

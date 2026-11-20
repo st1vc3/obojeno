@@ -5,7 +5,8 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly as _};
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSScreen, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSBackingStoreType, NSColor, NSScreen, NSWindow, NSWindowAnimationBehavior,
+    NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::{CGFloat, CGRect};
 use objc2_core_graphics::{
@@ -59,6 +60,10 @@ pub fn overlay_window(frame: CGRect, layer: Layer, mtm: MainThreadMarker) -> Ret
             | NSWindowCollectionBehavior::Stationary
             | NSWindowCollectionBehavior::IgnoresCycle,
     );
+    // obojeno animates these windows' contents itself. macOS's own
+    // animation would zoom and fade them when shown or hidden: the lid's
+    // picture shrinking away as the lid finishes opening.
+    window.setAnimationBehavior(NSWindowAnimationBehavior::None);
     window.setIgnoresMouseEvents(true);
     window.setHasShadow(false);
     window.setOpaque(false);

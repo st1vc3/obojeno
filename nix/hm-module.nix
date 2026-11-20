@@ -30,9 +30,10 @@ in
         }
       '';
       description = ''
-        Written to {file}`~/.config/obojeno/config.toml` on every activation, as a
-        writable file: changes made in the menu bar app last until the next
-        switch. Leave empty to manage the file yourself.
+        Merged into {file}`~/.config/obojeno/config.toml` on every activation.
+        Declared keys take these values; everything else stays as set in the
+        menu bar app, comments included; keys removed from here are removed
+        from the file too. Leave empty to manage the file yourself.
       '';
     };
 
@@ -76,11 +77,11 @@ in
     }
 
     (lib.mkIf (cfg.settings != { }) {
-      # A copy, not a store link, so the menu bar app can still edit it.
+      # Merged, not replaced: a store link or a fresh copy would undo what the
+      # menu bar app set on every switch.
       home.activation.obojenoConfig = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-        $DRY_RUN_CMD mkdir -p ${lib.escapeShellArg (builtins.dirOf configFile)}
-        $DRY_RUN_CMD rm -f ${lib.escapeShellArg configFile}
-        $DRY_RUN_CMD install -m 0644 ${toml.generate "obojeno-config.toml" cfg.settings} ${lib.escapeShellArg configFile}
+        $DRY_RUN_CMD ${cfg.package}/bin/obojeno --config ${lib.escapeShellArg configFile} \
+          declare ${toml.generate "obojeno-config.toml" cfg.settings}
       '';
     })
 

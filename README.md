@@ -126,9 +126,9 @@ programs.obojeno = {
 };
 ```
 
-The config is written as a regular file, so changes made in the menu bar app
-last until the next switch. For the menu bar app, use the Homebrew cask or
-build it from source.
+The settings are merged into the config file on every switch: what you
+declare wins, and everything else, such as what you set in the menu bar app,
+stays. For the menu bar app, use the Homebrew cask or build it from source.
 
 ### From source
 

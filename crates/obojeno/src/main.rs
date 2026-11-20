@@ -23,13 +23,14 @@ mod transition;
 mod watch;
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use obojeno_core::config::{Config, TransitionStyle};
 use obojeno_core::ipc::{Direction, ModeChange, Outcome, Reply, Report, Request, TargetInfo};
+use obojeno_core::output::write_if_changed;
 use obojeno_core::targets::{self, OutputKind};
 use obojeno_core::{Color, Mode, Palette, SchemeVariant, palette};
 
@@ -120,6 +121,11 @@ enum Command {
         #[arg(long)]
         thumbnail: Option<PathBuf>,
     },
+    /// Merge settings declared elsewhere (the home-manager module) into the
+    /// config file, keeping what was set in the app; keys declared before but
+    /// not anymore are removed
+    #[command(hide = true)]
+    Declare { settings: PathBuf },
     /// Decode an image's pixels into a file and print their size: the
     /// daemon's helper process
     #[command(name = "decode-pixels", hide = true)]
@@ -251,6 +257,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Preview { image, scheme } => return preview(&paths, image, scheme),
         Command::Targets { name } => return show_targets(name.as_deref(), &paths),
         Command::Setup { dry_run } => return run_setup(&paths, dry_run),
+        Command::Declare { settings } => return declare(&paths, &settings),
     };
     // A running daemon does the work, so changes animate and never race it.
     let report = match daemon::request(&paths, &request)? {
@@ -538,6 +545,34 @@ fn show_targets(name: Option<&str>, paths: &Paths) -> anyhow::Result<ExitCode> {
     if let Some(snippet) = target.snippet {
         println!("\n{snippet}");
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `obojeno declare`. The previous declaration is kept in the state folder,
+/// so keys removed from it can be removed from the config file too.
+fn declare(paths: &Paths, settings: &Path) -> anyhow::Result<ExitCode> {
+    let read = |path: &Path| match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(anyhow::Error::new(e).context(format!("reading {}", path.display()))),
+    };
+    let declared =
+        read(settings)?.with_context(|| format!("{} does not exist", settings.display()))?;
+    let previous_file = paths.state.join("declared.toml");
+    let current = read(&paths.config_file)?.unwrap_or_default();
+    let merged =
+        obojeno_core::config::merge_declared(&current, read(&previous_file)?.as_deref(), &declared)
+            .with_context(|| {
+                format!(
+                    "merging {} into {}",
+                    settings.display(),
+                    paths.config_file.display()
+                )
+            })?;
+    write_if_changed(&paths.config_file, merged.as_bytes())
+        .with_context(|| format!("writing {}", paths.config_file.display()))?;
+    write_if_changed(&previous_file, declared.as_bytes())
+        .with_context(|| format!("writing {}", previous_file.display()))?;
     Ok(ExitCode::SUCCESS)
 }
 

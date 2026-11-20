@@ -396,6 +396,82 @@ pub fn edit(text: &str, change: &ConfigChange) -> Result<String, EditError> {
     Ok(edited)
 }
 
+/// Merges settings declared elsewhere (the home-manager module) into the
+/// config file `text`, which the menu bar app edits too. Declared keys take
+/// the declared values; keys that were declared before (`previous`) but no
+/// longer are removed; everything else, comments included, stays as it is.
+pub fn merge_declared(
+    text: &str,
+    previous: Option<&str>,
+    declared: &str,
+) -> Result<String, EditError> {
+    use toml_edit::DocumentMut;
+
+    let mut doc: DocumentMut = text.parse()?;
+    let declared: DocumentMut = declared.parse()?;
+    if let Some(previous) = previous {
+        let previous: DocumentMut = previous.parse()?;
+        remove_undeclared(doc.as_table_mut(), previous.as_table(), declared.as_table());
+    }
+    merge(doc.as_table_mut(), declared.as_table());
+    let merged = doc.to_string();
+    Config::parse(&merged).map_err(|e| EditError::Invalid(e.to_string()))?;
+    Ok(merged)
+}
+
+/// Sets every key of `from` in `into`, recursing into tables both have.
+fn merge(into: &mut dyn toml_edit::TableLike, from: &dyn toml_edit::TableLike) {
+    for (key, item) in from.iter() {
+        match (into.get_mut(key), item.as_table_like()) {
+            (Some(existing), Some(table)) if existing.is_table_like() => {
+                if let Some(existing) = existing.as_table_like_mut() {
+                    merge(existing, table);
+                }
+            }
+            (Some(existing), None) if existing.is_value() => {
+                if let Some(value) = item.as_value() {
+                    set(existing, value.clone());
+                }
+            }
+            _ => {
+                into.insert(key, item.clone());
+            }
+        }
+    }
+}
+
+/// Removes from `into` what `previous` declared and `declared` no longer
+/// does. Tables are walked key by key, so what the app added to them stays;
+/// a table that ends up empty goes too (an empty target table would still
+/// turn the target on).
+fn remove_undeclared(
+    into: &mut dyn toml_edit::TableLike,
+    previous: &dyn toml_edit::TableLike,
+    declared: &dyn toml_edit::TableLike,
+) {
+    let nothing = toml_edit::Table::new();
+    for (key, before) in previous.iter() {
+        let now = declared.get(key);
+        let Some(before) = before.as_table_like() else {
+            if now.is_none() {
+                into.remove(key);
+            }
+            continue;
+        };
+        let now = now.and_then(toml_edit::Item::as_table_like);
+        let Some(existing) = into
+            .get_mut(key)
+            .and_then(toml_edit::Item::as_table_like_mut)
+        else {
+            continue;
+        };
+        remove_undeclared(existing, before, now.unwrap_or(&nothing));
+        if now.is_none() && existing.is_empty() {
+            into.remove(key);
+        }
+    }
+}
+
 /// Replaces a value, keeping the comments and spacing around it.
 fn set(item: &mut toml_edit::Item, mut new: toml_edit::Value) {
     if let Some(old) = item.as_value() {
@@ -407,6 +483,47 @@ fn set(item: &mut toml_edit::Item, mut new: toml_edit::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declared_settings_merge_into_what_the_app_set() {
+        let file = "# my notes\nlid_animation = true\n\n[finish]\ncorner_radius = 17.0 # like the screen\n\n[targets.kitty]\n";
+        let declared =
+            "wallpaper_dirs = [\"~/Walls\"]\n\n[finish]\ngrain = 0.2\n\n[targets.borders]\n";
+        let merged = merge_declared(file, None, declared).unwrap();
+        let config = Config::parse(&merged).unwrap();
+        assert!(config.lid_animation, "set in the app, kept");
+        assert!((config.finish.corner_radius - 17.0).abs() < f64::EPSILON);
+        assert!((config.finish.grain - 0.2).abs() < f64::EPSILON, "declared");
+        assert_eq!(config.wallpaper_dirs, ["~/Walls"]);
+        assert!(merged.contains("# my notes") && merged.contains("# like the screen"));
+        assert!(merged.contains("[targets.kitty]") && merged.contains("[targets.borders]"));
+    }
+
+    #[test]
+    fn declared_values_win_and_undeclared_ones_go() {
+        let file = "lid_animation = true\nall_spaces = true\n\n[finish]\ngrain = 0.9\n\n[targets.kitty]\n\n[targets.zen]\nprofile = \"x\"\n";
+        let previous =
+            "all_spaces = true\n\n[finish]\ngrain = 0.2\n\n[targets.zen]\nprofile = \"x\"\n";
+        let declared = "[finish]\ngrain = 0.3\n";
+        let merged = merge_declared(file, Some(previous), declared).unwrap();
+        let config = Config::parse(&merged).unwrap();
+        assert!(
+            (config.finish.grain - 0.3).abs() < f64::EPSILON,
+            "declared wins"
+        );
+        assert!(!config.all_spaces, "no longer declared");
+        assert!(!merged.contains("[targets.zen]"), "no longer declared");
+        assert!(
+            config.lid_animation && merged.contains("[targets.kitty]"),
+            "never declared"
+        );
+    }
+
+    #[test]
+    fn merging_into_a_missing_file_writes_the_declared_settings() {
+        let merged = merge_declared("", None, "scheme = \"vibrant\"\n").unwrap();
+        assert_eq!(merged, "scheme = \"vibrant\"\n");
+    }
 
     fn no_files(path: &str) -> std::io::Result<String> {
         Err(std::io::Error::new(

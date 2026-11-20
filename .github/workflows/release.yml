@@ -36,6 +36,9 @@ jobs:
       SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # All tags and history, for the release notes.
+          fetch-depth: 0
 
       - name: Require the update signing key
         run: |
@@ -101,11 +104,9 @@ jobs:
           echo "SHA256=$(cut -d' ' -f1 "dist/Obojeno-$VERSION.zip.sha256")" >> "$GITHUB_ENV"
 
       - name: Release notes
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$GITHUB_REF_NAME" \
-            --jq .body > "$RUNNER_TEMP/notes.md"
+        # The commits since the previous release; changes land on main
+        # directly, so there are no pull requests to list.
+        run: ./scripts/release-notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
 
       - name: Update feed
         env:

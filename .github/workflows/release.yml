@@ -56,7 +56,9 @@ jobs:
           security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
             -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
-          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          # Ours first, then the existing ones (one quoted path per line).
+          security list-keychains -d user | sed 's/^ *"\(.*\)"$/\1/' | tr '\n' '\0' \
+            | xargs -0 security list-keychains -d user -s "$keychain"
           identity="$(security find-identity -v -p codesigning "$keychain" \
             | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)"
           echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
@@ -94,7 +96,7 @@ jobs:
         run: |
           git clone "https://x-access-token:$TAP_TOKEN@github.com/st1vc3/homebrew-tap.git" "$RUNNER_TEMP/tap"
           mkdir -p "$RUNNER_TEMP/tap/Casks"
-          ./scripts/cask.sh "$VERSION" "$SHA256" ${NOTARIZED:-} > "$RUNNER_TEMP/tap/Casks/obojeno.rb"
+          ./scripts/cask.sh "$VERSION" "$SHA256" ${NOTARIZED:+"$NOTARIZED"} > "$RUNNER_TEMP/tap/Casks/obojeno.rb"
           ./scripts/check-cask.sh "$RUNNER_TEMP/tap/Casks/obojeno.rb"
           cd "$RUNNER_TEMP/tap"
           git config user.name "github-actions[bot]"

@@ -1,0 +1,18 @@
+# Weekly updates, one pull request per ecosystem. flake.lock is updated by
+# hand (`nix flake update`); Dependabot does not read it.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      crates:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

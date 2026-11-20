@@ -18,6 +18,13 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
+  deny:
+    # Licenses, security advisories and crate sources (deny.toml).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
   nix:
     runs-on: macos-latest
     steps:
@@ -26,6 +33,7 @@ jobs:
       - run: nix flake check
       - run: nix build
       - run: nix shell nixpkgs#shellcheck -c shellcheck scripts/*.sh
+      - run: nix shell nixpkgs#actionlint nixpkgs#shellcheck -c actionlint
 
   app:
     # Liquid Glass needs the macOS 26 SDK.

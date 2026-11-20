@@ -233,11 +233,11 @@ Your library in `~/Pictures/obojeno` is left alone.
 nix develop                     # Rust toolchain, clippy, rustfmt, cargo-insta
 cargo test --workspace          # palettes are checked against Google's reference
 ./scripts/build-app.sh          # the app; UNIVERSAL=1 for both architectures
-target/Obojeno.app/Contents/Helpers/obojeno -v daemon
 ```
 
-Releases are published by pushing a `v<version>` tag that matches
-`Cargo.toml`; see `.github/workflows/release.yml`.
+[CONTRIBUTING.md](CONTRIBUTING.md) has the rest: where things are, the checks
+CI runs, and how releases work. Report vulnerabilities privately; see
+[SECURITY.md](SECURITY.md).
 
 ## License
 

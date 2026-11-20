@@ -8,6 +8,8 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/st1vc3/obojeno"
 rust-version = "1.97"
+# Shipped as an app, a Nix package and a Homebrew cask, not on crates.io.
+publish = false
 
 [workspace.dependencies]
 obojeno-core = { path = "crates/obojeno-core" }

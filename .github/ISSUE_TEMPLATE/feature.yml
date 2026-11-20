@@ -1,0 +1,16 @@
+name: Feature request
+description: An idea for obojeno, such as an app to theme.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you would like
+      description: What it should do, and what you do today instead.
+    validations:
+      required: true
+  - type: textarea
+    id: app
+    attributes:
+      label: For a new app to theme
+      description: How the app is themed (config file, CSS, ...) and how it picks up changes without a restart, if it can.

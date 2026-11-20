@@ -63,7 +63,9 @@ cat <<'CASK'
     "~/.cache/obojeno",
     "~/.config/obojeno",
     "~/.local/state/obojeno",
-    "~/Library/Logs/obojeno.log",
+    "~/Library/Caches/io.github.st1vc3.obojeno",
+    "~/Library/HTTPStorages/io.github.st1vc3.obojeno",
+    "~/Library/Logs/obojeno.log*",
     "~/Library/Preferences/io.github.st1vc3.obojeno.plist",
   ]
 end

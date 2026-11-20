@@ -21,6 +21,10 @@ final class DaemonSupervisor {
     private var daemonPID: pid_t?
     /// Daemons already replaced, so each is only stopped once.
     private var replaced: Set<pid_t> = []
+    /// The daemon this app started last, also by an earlier run of it: an
+    /// update moves the old app away, so a daemon still running from it no
+    /// longer runs the app's own helper, but this still says it is ours.
+    private static let startedKey = "daemonStarted"
 
     // MARK: Events from the connection
 
@@ -63,14 +67,21 @@ final class DaemonSupervisor {
     /// Replaces the app's own daemon when the state it sent shows another
     /// version.
     func check(version: String?) {
-        guard version != AppInfo.version, let pid = daemonPID, !replaced.contains(pid),
-            let binary = Self.findBinary(), let path = Self.executablePath(of: pid),
-            Self.sameFile(path, binary.path)
-        else { return }
-        // Its executable is ours, so it is the copy from before the update:
-        // stop it, and `disconnected` starts the new one.
+        guard version != AppInfo.version, let pid = daemonPID, !replaced.contains(pid), isOurs(pid) else {
+            return
+        }
+        // The copy from before an update: stop it, and `disconnected` starts
+        // the new one.
         replaced.insert(pid)
         kill(pid, SIGTERM)
+    }
+
+    /// Whether this app started the daemon `pid`, or it runs this app's
+    /// helper (started at login, for one).
+    private func isOurs(_ pid: pid_t) -> Bool {
+        if UserDefaults.standard.integer(forKey: Self.startedKey) == Int(pid) { return true }
+        guard let binary = Self.findBinary(), let path = Self.executablePath(of: pid) else { return false }
+        return Self.sameFile(path, binary.path)
     }
 
     // MARK: Starting
@@ -91,6 +102,7 @@ final class DaemonSupervisor {
         process.standardError = log ?? FileHandle.nullDevice
         do {
             try process.run()
+            UserDefaults.standard.set(Int(process.processIdentifier), forKey: Self.startedKey)
             error = nil
         } catch {
             self.error = "Starting the daemon failed: \(error.localizedDescription)"

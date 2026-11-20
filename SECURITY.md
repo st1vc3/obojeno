@@ -13,10 +13,14 @@ Fixes go into the latest release. Update to it before reporting.
 
 ## What obojeno does that matters for security
 
-- **Network:** the menu bar app asks the GitHub API for the latest release,
-  once a day when automatic update checks are on, and when you ask it to.
-  Nothing else goes over the network, and nothing about you or your files is
-  sent.
+- **Network:** the menu bar app looks for a new release on GitHub, once a
+  day when automatic update checks are on, and when you ask it to. Nothing
+  else goes over the network, and nothing about you or your files is sent.
+- **Updates:** downloaded copies update themselves with
+  [Sparkle](https://sparkle-project.org). The update feed and every update
+  are signed with an EdDSA key; the app only accepts updates whose signature
+  matches the public key it ships with, and rejects a feed that is not
+  signed. Homebrew and Nix installs update through Homebrew and Nix.
 - **Local socket:** the daemon listens on
   `~/.local/state/obojeno/obojeno.sock`. The folder is readable only by you,
   the socket accepts only your user, and requests are limited in size and

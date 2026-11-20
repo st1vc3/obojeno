@@ -148,6 +148,8 @@ private struct UpdateBanner: View {
                         .help(Updater.brewCommand)
                 case .nix:
                     Button("Release Notes") { NSWorkspace.shared.open(release.page) }
+                case .download where updater.installsUpdates:
+                    Button("Install…") { updater.install() }
                 case .download:
                     Button("Download") { NSWorkspace.shared.open(release.page) }
                 }
@@ -165,6 +167,7 @@ private struct UpdateBanner: View {
         switch InstallMethod.current {
         case .homebrew: "Update with: \(Updater.brewCommand)"
         case .nix: "Update the obojeno flake input and rebuild."
+        case .download where model.updater.installsUpdates: "obojeno restarts once it is installed."
         case .download: "Download it from GitHub."
         }
     }

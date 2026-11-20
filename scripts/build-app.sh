@@ -7,6 +7,8 @@
 #                      both targets, and Xcode for swift)
 #   SIGN_IDENTITY=...  sign with this Developer ID (hardened runtime, secure
 #                      timestamp) instead of ad hoc
+#   FEED_URL=...       the update feed, for testing updates (default: the
+#                      latest GitHub release's appcast.xml)
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,9 +20,13 @@ swift() {
 }
 
 version="$("$root/scripts/version.sh")"
+feed="${FEED_URL:-https://github.com/st1vc3/obojeno/releases/latest/download/appcast.xml}"
+# Sparkle accepts only updates signed with the private half of this key
+# (the SPARKLE_PRIVATE_KEY secret of the release workflow).
+public_key="W5G9/wImPmjFC9KBMw1gqgWpEiBnbsFmDW/zDvXTz1M="
 
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Frameworks"
 
 if [[ "${UNIVERSAL:-}" == 1 ]]; then
   binaries=()
@@ -36,8 +42,12 @@ else
   swift_arch=()
 fi
 swift build --configuration release ${swift_arch[@]+"${swift_arch[@]}"} --product Obojeno --package-path "$root/app"
-cp "$(swift build --configuration release ${swift_arch[@]+"${swift_arch[@]}"} --package-path "$root/app" --show-bin-path)/Obojeno" \
-  "$app/Contents/MacOS/Obojeno"
+bin="$(swift build --configuration release ${swift_arch[@]+"${swift_arch[@]}"} --package-path "$root/app" --show-bin-path)"
+cp "$bin/Obojeno" "$app/Contents/MacOS/Obojeno"
+# Sparkle, without the XPC services only sandboxed apps need.
+ditto "$bin/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
+rm -rf "$app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" \
+  "$app/Contents/Frameworks/Sparkle.framework/XPCServices"
 
 cat >"$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -54,22 +64,31 @@ cat >"$app/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHumanReadableCopyright</key><string>MIT License</string>
+  <key>SUFeedURL</key><string>$feed</string>
+  <key>SUPublicEDKey</key><string>$public_key</string>
+  <key>SUEnableAutomaticChecks</key><true/>
+  <key>SURequireSignedFeed</key><true/>
+  <key>SUVerifyUpdateBeforeExtraction</key><true/>
 </dict>
 </plist>
 PLIST
 
-# Inside out: the helper first, then the bundle that seals it.
+# Inside out: helpers and Sparkle's parts first, then the bundles that seal
+# them.
 if [[ -n "${SIGN_IDENTITY:-}" ]]; then
   sign=(--sign "$SIGN_IDENTITY" --options runtime --timestamp)
 else
   sign=(--sign -)
 fi
-codesign --force "${sign[@]}" "$app/Contents/Helpers/obojeno"
-codesign --force "${sign[@]}" "$app"
+sparkle="$app/Contents/Frameworks/Sparkle.framework"
+for part in "$sparkle/Versions/B/Autoupdate" "$sparkle/Versions/B/Updater.app" "$sparkle" \
+  "$app/Contents/Helpers/obojeno" "$app"; do
+  codesign --force "${sign[@]}" "$part"
+done
 
 codesign --verify --strict --deep "$app"
 if [[ "${UNIVERSAL:-}" == 1 ]]; then
-  for binary in "$app/Contents/MacOS/Obojeno" "$app/Contents/Helpers/obojeno"; do
+  for binary in "$app/Contents/MacOS/Obojeno" "$app/Contents/Helpers/obojeno" "$sparkle/Versions/B/Sparkle"; do
     archs="$(lipo -archs "$binary" | tr ' ' '\n' | sort | xargs)"
     if [[ "$archs" != "arm64 x86_64" ]]; then
       echo "$binary is $archs, not universal" >&2

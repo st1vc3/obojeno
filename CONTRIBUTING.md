@@ -84,7 +84,10 @@ else can already be themed as a custom target from `config.toml`.
 ## Releases
 
 Maintainers release by pushing a `v<version>` tag that matches `Cargo.toml`
-(`scripts/version.sh`); `.github/workflows/release.yml` does the rest.
+(`scripts/version.sh`); `.github/workflows/release.yml` does the rest,
+including the signed update feed (`appcast.xml`) that installed copies update
+from. It needs the `SPARKLE_PRIVATE_KEY` secret, whose public half is in
+`scripts/build-app.sh`; a different key would strand every installed copy.
 
 ## License
 

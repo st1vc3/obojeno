@@ -1,7 +1,13 @@
 name: Release
 
 # Push a tag like v0.2.0 (matching the version in Cargo.toml) to publish
-# Obojeno.app as a GitHub release.
+# Obojeno.app as a GitHub release, with the update feed (appcast.xml) that
+# downloaded copies of the app update themselves from.
+#
+# Required secret:
+#   SPARKLE_PRIVATE_KEY  the private EdDSA key that signs updates and the
+#     feed (`generate_keys --account obojeno -x FILE` exports it); the app
+#     only accepts updates signed with it
 #
 # Optional secrets:
 #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD  Developer ID Application
@@ -27,8 +33,16 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
       TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Require the update signing key
+        run: |
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "::error::SPARKLE_PRIVATE_KEY is not set: installed apps could not update to this release"
+            exit 1
+          fi
 
       - name: Check the tag against Cargo.toml
         run: |
@@ -86,10 +100,33 @@ jobs:
           (cd dist && shasum -a 256 "Obojeno-$VERSION.zip" > "Obojeno-$VERSION.zip.sha256")
           echo "SHA256=$(cut -d' ' -f1 "dist/Obojeno-$VERSION.zip.sha256")" >> "$GITHUB_ENV"
 
+      - name: Release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$GITHUB_REF_NAME" \
+            --jq .body > "$RUNNER_TEMP/notes.md"
+
+      - name: Update feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # sign_update from the Sparkle version the app is built with.
+          sparkle="$(sed -n 's/.*"version" : "\(.*\)".*/\1/p' app/Package.resolved | head -1)"
+          gh release download "$sparkle" -R sparkle-project/Sparkle -p "Sparkle-$sparkle.tar.xz" -D "$RUNNER_TEMP"
+          mkdir "$RUNNER_TEMP/sparkle"
+          tar -xf "$RUNNER_TEMP/Sparkle-$sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle"
+          SIGN_UPDATE="$RUNNER_TEMP/sparkle/bin/sign_update" ./scripts/appcast.sh "$VERSION" \
+            "dist/Obojeno-$VERSION.zip" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/Obojeno-$VERSION.zip" \
+            "$RUNNER_TEMP/notes.md" dist/appcast.xml
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "obojeno $VERSION" --generate-notes
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --title "obojeno $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md"
 
       - name: Update the Homebrew cask
         if: env.TAP_TOKEN != ''

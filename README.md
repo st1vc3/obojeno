@@ -94,8 +94,10 @@ sudo mkdir -p /usr/local/bin
 sudo ln -sf /Applications/Obojeno.app/Contents/Helpers/obojeno /usr/local/bin/obojeno
 ```
 
-The app does not update itself: it tells you when a new release is out
-(Homebrew installs update with `brew upgrade`).
+The app updates itself: it checks once a day (or from **⋯ → Check for
+Updates…**), and installs a new release and restarts when you say so. Every
+update is signed, and the app refuses any that is not. Homebrew installs
+update with `brew upgrade` instead.
 
 ### Nix (flake and Home Manager)
 
@@ -262,7 +264,8 @@ move it to the Trash, and remove what it left behind:
 ```sh
 pkill -f "obojeno.*daemon"               # the daemon keeps running after the app quits
 sudo rm -f /usr/local/bin/obojeno        # if you linked the command
-rm -rf ~/.cache/obojeno ~/.config/obojeno ~/.local/state/obojeno ~/Library/Logs/obojeno.log*
+rm -rf ~/.cache/obojeno ~/.config/obojeno ~/.local/state/obojeno ~/Library/Logs/obojeno.log* \
+  ~/Library/Caches/io.github.st1vc3.obojeno ~/Library/HTTPStorages/io.github.st1vc3.obojeno
 ```
 
 Your library in `~/Pictures/obojeno` is left alone.

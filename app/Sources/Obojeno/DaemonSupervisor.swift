@@ -8,9 +8,8 @@ import Darwin
 
 @MainActor
 final class DaemonSupervisor {
+    /// Where the daemon's output goes; the daemon keeps it bounded.
     static let logFile = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Logs/obojeno.log")
-    /// The log is moved aside to `obojeno.log.1` beyond this size.
-    private static let maxLogSize = 5 * 1024 * 1024
 
     /// The last start failed, for the "not running" view.
     private(set) var error: String?
@@ -98,17 +97,11 @@ final class DaemonSupervisor {
         }
     }
 
-    /// The log, opened for appending; an old one past `maxLogSize` is moved
-    /// to `obojeno.log.1` first.
+    /// The log, opened for appending.
     private static func openLog() -> FileHandle? {
         let manager = FileManager.default
         let path = logFile.path
         try? manager.createDirectory(at: logFile.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if let size = (try? manager.attributesOfItem(atPath: path))?[.size] as? Int, size > maxLogSize {
-            let old = path + ".1"
-            try? manager.removeItem(atPath: old)
-            try? manager.moveItem(atPath: path, toPath: old)
-        }
         if !manager.fileExists(atPath: path) { manager.createFile(atPath: path, contents: nil) }
         guard let handle = FileHandle(forWritingAtPath: path) else { return nil }
         handle.seekToEndOfFile()

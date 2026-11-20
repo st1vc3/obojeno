@@ -1,7 +1,7 @@
 //! `obojeno service`: running the daemon at login with launchd, for installs
 //! without a home-manager module (which writes the same agent itself).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context as _, bail};
@@ -29,7 +29,7 @@ fn plist_path() -> anyhow::Result<PathBuf> {
 
 fn log_path() -> anyhow::Result<PathBuf> {
     let home = std::env::var_os("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home).join("Library/Logs/obojeno.log"))
+    Ok(crate::log_file::path(Path::new(&home)))
 }
 
 fn domain() -> String {

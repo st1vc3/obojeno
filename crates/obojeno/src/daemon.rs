@@ -5,11 +5,14 @@
 //! thread, which AppKit (transitions) requires anyway.
 
 use std::collections::{HashSet, VecDeque};
-use std::io::{BufRead as _, BufReader};
+use std::io::{BufRead as _, BufReader, Read as _};
+use std::os::fd::AsRawFd as _;
+use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use anyhow::{Context as _, bail};
 use dispatch2::DispatchQueue;
@@ -24,7 +27,7 @@ use crate::apply::{self, Applied};
 use crate::paths::Paths;
 use crate::state::{Source, State};
 use crate::{
-    actions, desktop, gallery, imageio, lid, lid_view, macos, screen_images, setup, watch,
+    actions, desktop, gallery, imageio, lid_view, log_file, macos, screen_images, setup, watch,
 };
 
 /// Work for the main thread.
@@ -93,6 +96,7 @@ pub fn run(paths: Paths) -> anyhow::Result<()> {
         return Ok(());
     }
     let listener = bind(&socket)?;
+    log_file::keep_bounded(&log_file::path(&paths.dirs.home));
     imageio::decode_in_helpers();
     tracing::info!(
         "obojeno {} listening on {}",
@@ -124,7 +128,6 @@ pub fn run(paths: Paths) -> anyhow::Result<()> {
     if let Ok(config) = Config::load(&daemon().paths.config_file) {
         desktop::apply_settings(config.finish, config.lid_animation, mtm);
     }
-    lid::watch();
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     // Theme once at start, so the desktop is right after login.
@@ -144,15 +147,27 @@ fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
             socket.display()
         );
     }
+    // Only this user may reach the socket: its folder is private, and so is
+    // the socket itself (connecting needs write permission).
     if let Some(dir) = socket.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+            .with_context(|| format!("creating {}", dir.display()))?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("restricting {}", dir.display()))?;
     }
     match std::fs::remove_file(socket) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e).with_context(|| format!("removing stale {}", socket.display())),
     }
-    UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))
+    let listener =
+        UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("restricting {}", socket.display()))?;
+    Ok(listener)
 }
 
 /// Queues work for the main thread from any thread.
@@ -487,10 +502,51 @@ fn accept(listener: &UnixListener) {
     }
 }
 
-fn serve(stream: &UnixStream) -> anyhow::Result<()> {
+/// The longest request line: far beyond any real one (importing a thousand
+/// images is about 100 KB), and a bound on what a client can make the
+/// daemon hold.
+const MAX_REQUEST: u64 = 1 << 20;
+/// How long a client may take to send its request.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Whether the other end of `stream` runs as this user, as the socket's
+/// permissions already ensure; checked again in case they were changed.
+fn same_user(stream: &UnixStream) -> bool {
+    let (mut uid, mut gid) = (0, 0);
+    // SAFETY: a connected socket and pointers to two writable ids.
+    let ok = unsafe { libc::getpeereid(stream.as_raw_fd(), &raw mut uid, &raw mut gid) } == 0;
+    // SAFETY: getuid cannot fail.
+    ok && uid == unsafe { libc::getuid() }
+}
+
+/// Reads the one request line a client sends, within the limits.
+fn read_request(stream: &UnixStream) -> anyhow::Result<String> {
+    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line)?;
+    BufReader::new(stream.take(MAX_REQUEST)).read_line(&mut line)?;
+    if !line.ends_with('\n') && line.len() as u64 >= MAX_REQUEST {
+        bail!("request longer than {MAX_REQUEST} bytes");
+    }
+    stream.set_read_timeout(None)?;
+    Ok(line)
+}
+
+fn serve(stream: &UnixStream) -> anyhow::Result<()> {
+    if !same_user(stream) {
+        bail!("refused a client of another user");
+    }
     let mut writer = stream;
+    let line = match read_request(stream) {
+        Ok(line) => line,
+        Err(e) => {
+            return send(
+                &mut writer,
+                &Reply::Error {
+                    message: format!("bad request: {e:#}"),
+                },
+            );
+        }
+    };
     let request: Request = match serde_json::from_str(&line) {
         Ok(request) => request,
         Err(e) => {
@@ -555,5 +611,44 @@ pub fn request(paths: &Paths, request: &Request) -> anyhow::Result<Option<Reply>
     match serde_json::from_str(&line).context("bad reply from the daemon")? {
         Reply::Error { message } => bail!(message),
         reply => Ok(Some(reply)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+
+    use super::*;
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn only_this_user_can_reach_the_socket() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("state/obojeno.sock");
+        let _listener = bind(&socket).unwrap();
+        assert_eq!(mode(socket.parent().unwrap()), 0o700);
+        assert_eq!(mode(&socket), 0o600);
+    }
+
+    #[test]
+    fn requests_are_one_bounded_line() {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        assert!(same_user(&server));
+        client.write_all(b"{\"cmd\":\"state\"}\n").unwrap();
+        assert_eq!(read_request(&server).unwrap(), "{\"cmd\":\"state\"}\n");
+
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let writer = std::thread::spawn(move || {
+            // Stops when the daemon side closes after reading its limit.
+            let chunk = vec![b'x'; 1 << 16];
+            while client.write_all(&chunk).is_ok() {}
+        });
+        let err = read_request(&server).unwrap_err().to_string();
+        assert!(err.contains("longer than"), "{err}");
+        drop(server);
+        writer.join().unwrap();
     }
 }

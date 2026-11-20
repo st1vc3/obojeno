@@ -17,7 +17,7 @@ use obojeno_core::config::Finish;
 
 use crate::imageio::LayerPixels;
 use crate::layers::{self, Layer};
-use crate::lid_view;
+use crate::{lid, lid_view};
 
 #[derive(Default)]
 struct Overlays {
@@ -60,6 +60,7 @@ fn rebuild(finish: Finish, lid_animation: bool, mtm: MainThreadMarker) {
         overlays.settings = Some((finish, lid_animation));
     });
     lid_view::rebuild(lid_animation, mtm);
+    lid::set_enabled(lid_animation);
 }
 
 fn finish_window(screen: &NSScreen, finish: Finish, mtm: MainThreadMarker) -> Retained<NSWindow> {

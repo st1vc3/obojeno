@@ -7,6 +7,9 @@
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::Thread;
 use std::time::{Duration, Instant};
 
 use objc2::MainThreadMarker;
@@ -167,13 +170,28 @@ impl Smoother {
     }
 }
 
+/// Whether the lid animation is on. The watcher sleeps while it is off.
+static ENABLED: AtomicBool = AtomicBool::new(false);
+/// The watcher, started the first time the animation is turned on; `None`
+/// without a sensor.
+static WATCHER: OnceLock<Option<Thread>> = OnceLock::new();
+
+/// Follows the lid while `on`. Nothing else needs the sensor, so it is not
+/// read at all while the lid animation is off.
+pub fn set_enabled(on: bool) {
+    ENABLED.store(on, Ordering::Relaxed);
+    if on && let Some(watcher) = WATCHER.get_or_init(watch) {
+        watcher.unpark();
+    }
+}
+
 /// Polls the sensor on a background thread and hands the progress to
 /// `lid_view` on the main thread. Fast while the lid moves or the effect
-/// shows, slow while it rests.
-pub fn watch() {
+/// shows, slow while it rests, not at all while the animation is off.
+fn watch() -> Option<Thread> {
     let Some(sensor) = LidSensor::open() else {
         tracing::info!("no lid sensor; the lid animation is off");
-        return;
+        return None;
     };
     let spawned = std::thread::Builder::new()
         .name("obojeno-lid".into())
@@ -185,6 +203,16 @@ pub fn watch() {
             let mut last_angle = None;
             let mut last_tick = Instant::now();
             loop {
+                if !ENABLED.load(Ordering::Relaxed) {
+                    // Starts over when turned back on: the lid may have
+                    // moved in between.
+                    (tracker, smoother) = (Tracker::default(), Smoother::default());
+                    (target, sent, last_angle) = (0.0, 0.0, None);
+                    // Woken by `set_enabled`; a spurious wake checks again.
+                    std::thread::park();
+                    last_tick = Instant::now();
+                    continue;
+                }
                 let now = Instant::now();
                 let angle = sensor.angle();
                 if let Some(angle) = angle {
@@ -214,8 +242,12 @@ pub fn watch() {
                 std::thread::sleep(Duration::from_millis(pause));
             }
         });
-    if let Err(e) = spawned {
-        tracing::warn!("cannot watch the lid: {e}");
+    match spawned {
+        Ok(handle) => Some(handle.thread().clone()),
+        Err(e) => {
+            tracing::warn!("cannot watch the lid: {e}");
+            None
+        }
     }
 }
 

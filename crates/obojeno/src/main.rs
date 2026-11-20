@@ -10,6 +10,7 @@ mod large_alloc;
 mod layers;
 mod lid;
 mod lid_view;
+mod log_file;
 mod macos;
 mod paths;
 mod programs;
@@ -181,7 +182,7 @@ fn main() -> ExitCode {
             tracing_subscriber::EnvFilter::try_from_env("OBOJENO_LOG")
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level)),
         )
-        .with_writer(std::io::stderr)
+        .with_writer(log_file::writer)
         .with_ansi(terminal)
         .with_target(false);
     if terminal {

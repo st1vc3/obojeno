@@ -21,6 +21,8 @@ final class DaemonSupervisor {
     private var daemonPID: pid_t?
     /// Daemons already replaced, so each is only stopped once.
     private var replaced: Set<pid_t> = []
+    /// The app is quitting: no more restarts.
+    private var stopping = false
     /// The daemon this app started last, also by an earlier run of it: an
     /// update moves the old app away, so a daemon still running from it no
     /// longer runs the app's own helper, but this still says it is ours.
@@ -41,7 +43,7 @@ final class DaemonSupervisor {
         if let since = connectedSince, Date().timeIntervalSince(since) > 30 { failures = 0 }
         connectedSince = nil
         daemonPID = nil
-        guard pending == nil else { return }
+        guard pending == nil, !stopping else { return }
         let delay = failures == 0 ? 0 : min(30, pow(2, Double(failures - 1)))
         failures += 1
         pending = Task { [weak self] in
@@ -82,6 +84,29 @@ final class DaemonSupervisor {
         if UserDefaults.standard.integer(forKey: Self.startedKey) == Int(pid) { return true }
         guard let binary = Self.findBinary(), let path = Self.executablePath(of: pid) else { return false }
         return Self.sameFile(path, binary.path)
+    }
+
+    // MARK: Stopping
+
+    /// Stops the daemon this app started, with the helpers it runs, as the
+    /// app quits. A daemon from somewhere else keeps running.
+    func stop() {
+        pending?.cancel()
+        pending = nil
+        stopping = true
+        let pid = pid_t(UserDefaults.standard.integer(forKey: Self.startedKey))
+        // The pid may belong to another process by now.
+        guard pid > 0, let path = Self.executablePath(of: pid),
+            URL(fileURLWithPath: path).lastPathComponent == "obojeno"
+        else { return }
+        // `Process` starts it as the leader of a process group of its own,
+        // which the decoders and reload commands it runs share.
+        let signal = { (sig: Int32) in getpgid(pid) == pid ? killpg(pid, sig) : kill(pid, sig) }
+        _ = signal(SIGTERM)
+        let deadline = Date().addingTimeInterval(2)
+        while kill(pid, 0) == 0, Date() < deadline { usleep(20_000) }
+        if kill(pid, 0) == 0 { _ = signal(SIGKILL) }
+        UserDefaults.standard.removeObject(forKey: Self.startedKey)
     }
 
     // MARK: Starting

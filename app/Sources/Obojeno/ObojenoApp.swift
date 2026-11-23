@@ -26,6 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.model = model
         status = StatusPanel(model: model)
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        model?.supervisor.stop()
+    }
 }
 
 /// A dot in the current wallpaper's color; a palette symbol while there is

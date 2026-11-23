@@ -41,7 +41,8 @@ final class StatusPanel: NSObject {
         }
         if let button = item.button {
             button.target = self
-            button.action = #selector(toggle)
+            button.action = #selector(clicked)
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.setAccessibilityLabel("obojeno")
         }
         updateIcon()
@@ -75,7 +76,22 @@ final class StatusPanel: NSObject {
         open()
     }
 
-    @objc private func toggle() {
+    /// A right or Control-click shows the item's menu, any other click
+    /// the panel.
+    @objc private func clicked() {
+        guard let event = NSApp.currentEvent,
+            event.type == .rightMouseUp || event.modifierFlags.contains(.control)
+        else { return toggle() }
+        if panel.isVisible { panel.close() }
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Quit obojeno", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        // Shown by the item itself, placed like other menu bar menus.
+        item.menu = menu
+        item.button?.performClick(nil)
+        item.menu = nil
+    }
+
+    private func toggle() {
         if panel.isVisible {
             panel.close()
         } else if Date().timeIntervalSince(closedAt) > 0.25 {

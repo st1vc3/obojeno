@@ -27,7 +27,8 @@ pub fn execute(paths: &Paths, request: &Request) -> anyhow::Result<Applied> {
         | Request::Import { .. }
         | Request::Remove { .. }
         | Request::LidPreview { .. }
-        | Request::Targets => {
+        | Request::Targets
+        | Request::SetUp { .. } => {
             anyhow::bail!("only the daemon answers {request:?}")
         }
         Request::Apply { mode } => apply::apply(paths, *mode, None),

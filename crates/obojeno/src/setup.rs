@@ -4,10 +4,11 @@
 use std::collections::BTreeMap;
 
 use obojeno_core::config::{Config, ConfigChange, TargetChange};
-use obojeno_core::ipc::TargetInfo;
+use obojeno_core::ipc::{SetupResult, TargetInfo};
 use obojeno_core::targets;
 
-use crate::detect::{self, Places};
+use crate::detect::{self, Found, Places};
+use crate::link;
 use crate::paths::Paths;
 
 pub fn targets(paths: &Paths) -> anyhow::Result<Vec<TargetInfo>> {
@@ -19,11 +20,8 @@ pub fn targets(paths: &Paths) -> anyhow::Result<Vec<TargetInfo>> {
             let target = targets::builtin(name)?;
             let found = detect::find(name, &places);
             let configured = config.targets.get(name);
-            // Values from the config win over the ones found.
-            let mut options = found.options;
-            if let Some(configured) = configured {
-                options.extend(configured.options.clone());
-            }
+            let options = options(&found, &config, name);
+            let plan = link::plan(name, &places, &options);
             let missing = target
                 .options
                 .iter()
@@ -36,10 +34,64 @@ pub fn targets(paths: &Paths) -> anyhow::Result<Vec<TargetInfo>> {
                 installed: found.installed,
                 set_up: found.set_up,
                 setup: target.setup.to_owned(),
-                snippet: target.snippet.map(str::to_owned),
+                snippet: plan
+                    .as_ref()
+                    .map(|plan| plan.text.clone())
+                    .or_else(|| target.snippet.map(str::to_owned)),
+                setup_file: plan.map(|plan| places.dirs.abbreviate(&plan.file)),
                 options,
                 missing,
             })
+        })
+        .collect())
+}
+
+/// Option values found on this Mac; the ones in the config win.
+fn options(found: &Found, config: &Config, name: &str) -> BTreeMap<String, String> {
+    let mut options = found.options.clone();
+    if let Some(configured) = config.targets.get(name) {
+        options.extend(configured.options.clone());
+    }
+    options
+}
+
+/// Adds the setup lines of these targets to their apps' configs, skipping
+/// the ones set up already.
+pub fn link(paths: &Paths, names: &[String]) -> anyhow::Result<Vec<SetupResult>> {
+    let config = Config::load(&paths.config_file)?;
+    let places = Places::of_this_user(&paths.dirs);
+    let abbreviate = |path: &std::path::Path| places.dirs.abbreviate(path);
+    Ok(names
+        .iter()
+        .map(|name| {
+            let found = detect::find(name, &places);
+            let mut result = SetupResult {
+                name: name.clone(),
+                file: None,
+                backup: None,
+                error: None,
+            };
+            match link::plan(name, &places, &options(&found, &config, name)) {
+                None => result.error = Some(format!("obojeno cannot set up {name} by itself")),
+                Some(_) if found.set_up == Some(true) => {}
+                Some(plan) => match link::add(&plan) {
+                    Ok(link::Added::Already) => {}
+                    Ok(link::Added::Now { backup }) => {
+                        tracing::info!(
+                            "{name}: added its setup to {}{}",
+                            plan.file.display(),
+                            backup
+                                .as_ref()
+                                .map(|b| format!(", copy of before in {}", b.display()))
+                                .unwrap_or_default()
+                        );
+                        result.file = Some(abbreviate(&plan.file));
+                        result.backup = backup.as_deref().map(abbreviate);
+                    }
+                    Err(e) => result.error = Some(format!("{e:#}")),
+                },
+            }
+            result
         })
         .collect())
 }
@@ -79,6 +131,7 @@ mod tests {
             set_up: None,
             setup: String::new(),
             snippet: None,
+            setup_file: None,
             options: BTreeMap::from([("vault".to_owned(), "~/Notes".to_owned())]),
             missing: missing.map(str::to_owned),
         }

@@ -224,6 +224,19 @@ fn handle(request: Request) -> Reply {
         Request::Targets => {
             setup::targets(paths).map_or_else(error, |targets| Reply::Targets { targets })
         }
+        Request::SetUp { targets } => setup::link(paths, &targets).map_or_else(error, |results| {
+            // The apps read the lines on their next reload.
+            if results.iter().any(|r| r.file.is_some()) {
+                let apply = Request::Apply { mode: None };
+                if let Err(e) = actions::execute(paths, &apply).and_then(|applied| {
+                    publish(&applied, &Config::load(&paths.config_file)?);
+                    Ok(())
+                }) {
+                    tracing::warn!("theming after the setup: {e:#}");
+                }
+            }
+            Reply::SetUp { results }
+        }),
         Request::Import { paths: images } => {
             change_gallery(|config| gallery::import(paths, config, &images).map(drop))
         }

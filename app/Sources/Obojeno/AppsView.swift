@@ -18,7 +18,9 @@ struct AppsSection: View {
                 }
             }
         }
-        Caption("obojeno writes each app's colors and reloads it. Some apps need a line added to their config once.")
+        Caption(
+            "obojeno writes each app's colors and reloads it. Some apps need a line added to their config once, which obojeno can do for you."
+        )
     }
 }
 
@@ -99,16 +101,20 @@ private struct SetupButton: View {
     }
 }
 
-/// An app's setup text and its snippet, with a Copy button.
+/// An app's setup text and its snippet, with a Copy button, and one that
+/// adds the snippet when obojeno can.
 struct SetupSteps: View {
     @Environment(AppModel.self) private var model
     let target: TargetInfo
+    /// On the first run's last page: says where obojeno adds the snippet
+    /// once the user confirms, instead of offering to add it now.
+    var confirming = false
     @ViewState private var copied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(target.title).font(.headline)
-            Text(target.setup)
+            Text(description)
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
             if let snippet = target.snippet {
@@ -119,8 +125,19 @@ struct SetupSteps: View {
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                if let added {
+                    Text(added)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 HStack {
                     Spacer()
+                    if !confirming, target.canSetUp {
+                        Button("Add for Me") { model.setUp(target) }
+                            .buttonStyle(CapsuleButtonStyle())
+                            .help("Add this to \(target.setupFile ?? "the config"), keeping a copy of the file")
+                    }
                     Button(copied ? "Copied" : "Copy") {
                         model.copy(snippet)
                         copied = true
@@ -129,6 +146,20 @@ struct SetupSteps: View {
                 }
             }
         }
+    }
+
+    private var description: String {
+        if confirming, target.canSetUp, let file = target.setupFile {
+            return "obojeno adds this to \(file):"
+        }
+        return target.setup
+    }
+
+    /// Where the snippet went, and the copy of the file from before.
+    private var added: String? {
+        guard let result = model.setupResults[target.name], let file = result.file else { return nil }
+        guard let backup = result.backup else { return "Added to \(file)." }
+        return "Added to \(file). The file from before is \(backup)."
     }
 }
 
@@ -143,11 +174,35 @@ struct WelcomeView: View {
     var body: some View {
         let found = model.targets.filter(\.installed)
         let selection = chosen ?? Set(found.filter { $0.missing == nil }.map(\.name))
+        // The buttons stay in view below whatever scrolls.
         VStack(alignment: .leading, spacing: 14) {
-            if showingSteps {
-                steps(for: selection)
-            } else {
-                choose(found: found, selection: selection)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if showingSteps {
+                        steps(for: selection)
+                    } else {
+                        choose(found: found, selection: selection)
+                    }
+                }
+                // Clear of the fade once scrolled to the end.
+                .padding(.bottom, 16)
+            }
+            .scrollIndicators(.never)
+            // What scrolls fades out above the buttons instead of ending at
+            // a hard edge.
+            .mask {
+                VStack(spacing: 0) {
+                    Rectangle()
+                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 16)
+                }
+            }
+            HStack {
+                if showingSteps {
+                    stepsButtons(for: selection)
+                } else {
+                    chooseButtons(for: selection)
+                }
             }
         }
     }
@@ -190,46 +245,74 @@ struct WelcomeView: View {
         if !missing.isEmpty {
             Caption("Not found: \(missing.joined(separator: ", ")). You can change all of this later in Settings.")
         }
-        HStack {
-            Spacer()
-            Button(needsSteps(selection).isEmpty ? "Start" : "Continue") {
-                if needsSteps(selection).isEmpty {
-                    model.finishWelcome(enabling: selection, options: options)
-                } else {
-                    withAnimation(.snappy) { showingSteps = true }
-                }
+    }
+
+    @ViewBuilder private func chooseButtons(for selection: Set<String>) -> some View {
+        Spacer()
+        Button(needsSteps(selection).isEmpty ? "Start" : "Continue") {
+            if needsSteps(selection).isEmpty {
+                model.finishWelcome(enabling: selection, options: options, linking: [])
+            } else {
+                withAnimation(.snappy) { showingSteps = true }
             }
-            .buttonStyle(CapsuleButtonStyle())
-            .keyboardShortcut(.defaultAction)
         }
+        .buttonStyle(CapsuleButtonStyle())
+        .keyboardShortcut(.defaultAction)
     }
 
     @ViewBuilder private func steps(for selection: Set<String>) -> some View {
+        let targets = needsSteps(selection)
+        let linking = linking(selection)
         VStack(alignment: .leading, spacing: 6) {
             Text("Almost there").font(.title2.weight(.bold)).legibleOnGlass()
-            Text("These apps need a line in their config once, so they read obojeno's colors.")
+            Text(intro(targets: targets.count, linking: linking.count))
                 .font(.callout)
                 .foregroundStyle(.white.opacity(0.85))
                 .legibleOnGlass()
                 .fixedSize(horizontal: false, vertical: true)
         }
-        ForEach(needsSteps(selection)) { target in
-            SetupSteps(target: target)
+        ForEach(targets) { target in
+            SetupSteps(target: target, confirming: true)
                 .padding(14)
                 .glassEffect(.regular, in: .rect(cornerRadius: 16))
         }
-        HStack {
-            Button("Back") { withAnimation(.snappy) { showingSteps = false } }
-                .buttonStyle(CapsuleButtonStyle())
-            Spacer()
-            Button("Start") { model.finishWelcome(enabling: selection, options: options) }
-                .buttonStyle(CapsuleButtonStyle())
-                .keyboardShortcut(.defaultAction)
-        }
     }
 
-    /// Chosen apps known not to be set up, or that may need it.
+    @ViewBuilder private func stepsButtons(for selection: Set<String>) -> some View {
+        let linking = linking(selection)
+        Button("Back") { withAnimation(.snappy) { showingSteps = false } }
+            .buttonStyle(CapsuleButtonStyle())
+        Spacer()
+        if !linking.isEmpty {
+            Button("Skip") { model.finishWelcome(enabling: selection, options: options, linking: []) }
+                .buttonStyle(CapsuleButtonStyle())
+                .help("Start without changing these files")
+        }
+        // No Return shortcut: the Return that pressed Continue would press
+        // this too, skipping the confirmation before files change.
+        Button(linking.isEmpty ? "Start" : "Add and Start") {
+            model.finishWelcome(enabling: selection, options: options, linking: linking)
+        }
+        .buttonStyle(CapsuleButtonStyle())
+    }
+
+    private func intro(targets: Int, linking: Int) -> String {
+        let need = "These apps need a line in their config once, so they read obojeno's colors."
+        let backup = "and keeps each file from before next to it, ending in .obojeno-backup."
+        if linking == 0 { return need }
+        if linking == targets { return "\(need) obojeno adds it, \(backup)" }
+        return "\(need) obojeno adds it where it can write, \(backup) Add the others yourself."
+    }
+
+    /// The chosen apps whose setup obojeno does on confirmation.
+    private func linking(_ selection: Set<String>) -> [String] {
+        needsSteps(selection).filter(\.canSetUp).map(\.name)
+    }
+
+    /// Chosen apps known not to be set up, or that may need it; the ones
+    /// obojeno sets up first.
     private func needsSteps(_ selection: Set<String>) -> [TargetInfo] {
-        model.targets.filter { selection.contains($0.name) && $0.snippet != nil && $0.setUp != true }
+        let targets = model.targets.filter { selection.contains($0.name) && $0.snippet != nil && $0.setUp != true }
+        return targets.filter(\.canSetUp) + targets.filter { !$0.canSetUp }
     }
 }

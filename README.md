@@ -150,7 +150,7 @@ obojeno next                      # next / previous / random gallery image
 obojeno color '#ff4057'           # theme from a color; --wallpaper to go back
 obojeno preview [image]           # show an image's palette in the terminal
 obojeno import *.jpg              # copy images into the library
-obojeno setup                     # turn on the apps found on this Mac, show what is left
+obojeno setup                     # turn on the apps found on this Mac, offer to set them up
 obojeno targets [name]            # built-in targets and how to set one up
 obojeno service status            # the daemon at login: install / uninstall / status
 ```
@@ -202,6 +202,12 @@ scheme, so they don't turn the whole desktop a random hue.
 | `obsidian` | the `obojeno` CSS snippet in your vault | option `vault`; enable the snippet |
 | `zen` | `userChrome.css` in your profile | option `profile`; applies on the next start |
 
+The first run in the menu bar app, **Add for Me** in its settings and
+`obojeno setup` add the setup lines for kitty, Neovim, starship, herdr and Zen
+themselves, to the end of kitty.conf, init.lua (or init.vim), your shell
+profile (`.zshrc`, `.bash_profile` or `config.fish`) and `user.js`. Each file
+is copied first, to `<file>.obojeno-backup`, so you can go back to it.
+
 Every target takes `enabled`, `template`, `output`, `reload` (a list of
 commands, `[]` for none) and `only_if_running`. A table with a name that is
 not built in is a custom target:
@@ -237,8 +243,8 @@ The gallery shows recent wallpapers, your library (images added with **+**
 are copied there) and your folders, in three sizes. Click to set one;
 right-click to show it in Finder or remove it from the library.
 
-**Settings** has the apps to theme (with the one-time setup each needs, and
-a Copy button for it), open at login, show in Dock, automatic update checks, the
+**Settings** has the apps to theme (with the one-time setup each needs,
+which obojeno can add for you), open at login, show in Dock, automatic update checks, the
 scheme, transitions, Spaces, grain, corners, the lid animation, folders and
 shortcuts for next, previous and random wallpapers.
 

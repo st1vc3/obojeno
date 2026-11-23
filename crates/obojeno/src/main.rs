@@ -10,6 +10,7 @@ mod large_alloc;
 mod layers;
 mod lid;
 mod lid_view;
+mod link;
 mod log_file;
 mod macos;
 mod paths;
@@ -23,6 +24,7 @@ mod transition;
 mod watch;
 
 use std::collections::BTreeSet;
+use std::io::{IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -600,13 +602,72 @@ fn run_setup(paths: &Paths, dry_run: bool) -> anyhow::Result<ExitCode> {
                 None => turning_on.contains(&t.name),
             }
     });
-    for t in todo {
+    let todo: Vec<&TargetInfo> = todo.collect();
+    for t in &todo {
         println!("\n{}: {}", t.title, t.setup);
         if let Some(snippet) = &t.snippet {
             println!("\n{snippet}");
         }
     }
-    Ok(ExitCode::SUCCESS)
+    let files: Vec<&str> = todo
+        .iter()
+        .filter_map(|t| t.setup_file.as_deref())
+        .collect();
+    if dry_run || files.is_empty() || !std::io::stdin().is_terminal() {
+        return Ok(ExitCode::SUCCESS);
+    }
+    print!(
+        "\nAdd this to {}? A copy of each file is kept next to it. [y/N] ",
+        files.join(", ")
+    );
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if !matches!(answer.trim(), "y" | "Y" | "yes") {
+        return Ok(ExitCode::SUCCESS);
+    }
+    let names: Vec<String> = todo
+        .iter()
+        .filter(|t| t.setup_file.is_some())
+        .map(|t| t.name.clone())
+        .collect();
+    let request = Request::SetUp {
+        targets: names.clone(),
+    };
+    let results = match daemon::request(paths, &request)? {
+        Some(Reply::SetUp { results }) => results,
+        Some(Reply::Error { message }) => anyhow::bail!(message),
+        Some(_) => anyhow::bail!("unexpected reply from the daemon"),
+        None => {
+            let results = setup::link(paths, &names)?;
+            if results.iter().any(|r| r.file.is_some()) {
+                actions::execute(paths, &Request::Apply { mode: None })?;
+            }
+            results
+        }
+    };
+    let mut failed = false;
+    for result in results {
+        match (result.file, result.backup, result.error) {
+            (_, _, Some(error)) => {
+                failed = true;
+                eprintln!("  {}: {error}", result.name);
+            }
+            (Some(file), Some(backup), None) => {
+                println!(
+                    "  {}: added to {file}, the one from before is {backup}",
+                    result.name
+                );
+            }
+            (Some(file), None, None) => println!("  {}: added to {file}", result.name),
+            (None, _, None) => println!("  {}: set up already", result.name),
+        }
+    }
+    Ok(if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 /// One line per target: on or off, and what was found.

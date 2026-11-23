@@ -194,6 +194,33 @@ pub fn pids_named(name: &str) -> anyhow::Result<Vec<c_int>> {
         .collect())
 }
 
+/// This user's login shell, from the user database: `$SHELL` is not set
+/// under launchd.
+pub fn login_shell() -> Option<PathBuf> {
+    let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut buffer = vec![0 as libc::c_char; 4096];
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: `entry` and `buffer` outlive the call and the strings it
+    // points `entry` at, which live in `buffer`.
+    let status = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            entry.as_mut_ptr(),
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &raw mut found,
+        )
+    };
+    if status != 0 || found.is_null() {
+        return None;
+    }
+    // SAFETY: on success `found` points at `entry`, filled in, and its shell
+    // is a NUL-terminated string in `buffer`.
+    let shell = unsafe { CStr::from_ptr((*found).pw_shell) };
+    let shell = shell.to_str().ok()?;
+    (!shell.is_empty()).then(|| PathBuf::from(shell))
+}
+
 /// File names on macOS are stored decomposed (NFD: `U` + combining
 /// diaeresis for `Ü`), while names typed in code are usually composed.
 fn same_name(a: &str, b: &str) -> bool {
@@ -210,6 +237,11 @@ mod tests {
         assert!(same_name("U\u{308}bersicht", "\u{dc}bersicht"));
         assert!(same_name("kitty", "kitty"));
         assert!(!same_name("kitty", "kitten"));
+    }
+
+    #[test]
+    fn has_a_login_shell() {
+        assert!(login_shell().is_some_and(|shell| shell.is_absolute()));
     }
 
     #[test]

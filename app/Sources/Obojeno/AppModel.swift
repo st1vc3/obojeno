@@ -30,6 +30,8 @@ final class AppModel {
     private(set) var gallery: Gallery?
     /// The apps obojeno can theme, for the welcome and Apps settings.
     private(set) var targets: [TargetInfo] = []
+    /// What adding setup lines last did, by target.
+    private(set) var setupResults: [String: SetupResult] = [:]
     private(set) var connected = false
     /// The last failed action, shown until the next one succeeds.
     var error: String?
@@ -106,7 +108,7 @@ final class AppModel {
             self.gallery = gallery
         case .targets(let targets):
             self.targets = targets
-        case .report, .error:
+        case .report, .setUp, .error:
             break
         }
     }
@@ -147,9 +149,32 @@ final class AppModel {
         }
     }
 
-    /// Ends the first run: the chosen apps on, the other ones found off.
-    /// Writing the config is what marks the first run as done.
-    func finishWelcome(enabling chosen: Set<String>, options: [String: [String: String]]) {
+    /// Adds an app's setup lines to its config, keeping a copy of the file.
+    func setUp(_ target: TargetInfo) {
+        run { client in try await self.setUp([target.name], client) }
+    }
+
+    /// After the config, so the apps are themed when they read the lines.
+    private func setUp(_ names: [String], _ client: DaemonClient) async throws {
+        guard !names.isEmpty else { return }
+        if case .setUp(let results) = try await client.send(.setUp(names)) {
+            for result in results { setupResults[result.name] = result }
+            try await reloadTargets(client)
+            let failed = results.compactMap { result in
+                result.error.map { "\(self.title(of: result.name)): \($0)" }
+            }
+            if !failed.isEmpty { throw DaemonError.daemon(failed.joined(separator: "\n")) }
+        }
+    }
+
+    private func title(of name: String) -> String {
+        targets.first { $0.name == name }?.title ?? name
+    }
+
+    /// Ends the first run: the chosen apps on, the other ones found off, and
+    /// the setup lines of `linking` added. Writing the config is what marks
+    /// the first run as done.
+    func finishWelcome(enabling chosen: Set<String>, options: [String: [String: String]], linking: [String]) {
         var changes: [String: TargetChange] = [:]
         for target in targets where target.installed {
             let all = target.options.merging(options[target.name] ?? [:]) { _, chosen in chosen }
@@ -164,6 +189,7 @@ final class AppModel {
         run { client in
             _ = try await client.send(.configure(change))
             try await self.reloadTargets(client)
+            try await self.setUp(linking, client)
         }
     }
 

@@ -78,6 +78,11 @@ pub enum Request {
     },
     /// The built-in targets, whether they are on, installed and set up.
     Targets,
+    /// Add the setup lines of these targets to their apps' configs, each
+    /// file copied first, then re-theme so the apps pick the lines up.
+    SetUp {
+        targets: Vec<String>,
+    },
     /// Show the lid animation at `percent` (0 open, 100 shut), for tuning it
     /// with the lid open; `null` follows the sensor again.
     LidPreview {
@@ -100,6 +105,7 @@ pub enum Reply {
     State(Box<State>),
     Gallery(Gallery),
     Targets { targets: Vec<TargetInfo> },
+    SetUp { results: Vec<SetupResult> },
     Error { message: String },
 }
 
@@ -149,12 +155,29 @@ pub struct TargetInfo {
     /// Whether the one-time setup is done, when obojeno can tell.
     pub set_up: Option<bool>,
     pub setup: String,
+    /// The text to add for that setup, in the syntax of `setup_file`.
     pub snippet: Option<String>,
+    /// The file obojeno adds the snippet to when asked (`~/...`); `None`
+    /// when the setup is left to the user.
+    #[serde(default)]
+    pub setup_file: Option<String>,
     /// Option values: from the config, or found on this Mac (an Obsidian
     /// vault, a Zen profile) for options it needs.
     pub options: std::collections::BTreeMap<String, String>,
     /// A required option with no value: the target cannot be turned on.
     pub missing: Option<String>,
+}
+
+/// What adding a target's setup lines did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupResult {
+    pub name: String,
+    /// The file the lines went to (`~/...`); `None` when it had them already
+    /// or adding them failed.
+    pub file: Option<String>,
+    /// The copy of the file from before, when there was a file.
+    pub backup: Option<String>,
+    pub error: Option<String>,
 }
 
 /// What happened when theming.

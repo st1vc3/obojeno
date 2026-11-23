@@ -128,17 +128,36 @@ struct TargetInfo: Codable, Sendable, Equatable, Identifiable {
     /// Whether the one-time setup is done, when obojeno can tell.
     let setUp: Bool?
     let setup: String
+    /// The text to add for that setup, in the syntax of `setupFile`.
     let snippet: String?
+    /// The file obojeno adds the snippet to when asked; nil when the setup
+    /// is left to the user.
+    let setupFile: String?
     let options: [String: String]
     /// A required option without a value; the target cannot be turned on.
     let missing: String?
 
     var id: String { name }
 
+    /// obojeno can do the setup that is still missing.
+    var canSetUp: Bool { setupFile != nil && setUp != true }
+
     enum CodingKeys: String, CodingKey {
         case name, title, enabled, installed, setup, snippet, options, missing
         case setUp = "set_up"
+        case setupFile = "setup_file"
     }
+}
+
+/// What adding a target's setup lines did.
+struct SetupResult: Decodable, Sendable, Equatable {
+    let name: String
+    /// The file the lines went to; nil when it had them already or adding
+    /// them failed.
+    let file: String?
+    /// The copy of the file from before.
+    let backup: String?
+    let error: String?
 }
 
 enum Reply: Decodable, Sendable {
@@ -146,9 +165,10 @@ enum Reply: Decodable, Sendable {
     case state(DaemonState)
     case gallery(Gallery)
     case targets([TargetInfo])
+    case setUp([SetupResult])
     case error(String)
 
-    private enum Keys: String, CodingKey { case reply, message, targets }
+    private enum Keys: String, CodingKey { case reply, message, targets, results }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -157,6 +177,7 @@ enum Reply: Decodable, Sendable {
         case "state": self = .state(try DaemonState(from: decoder))
         case "gallery": self = .gallery(try Gallery(from: decoder))
         case "targets": self = .targets(try c.decode([TargetInfo].self, forKey: .targets))
+        case "set_up": self = .setUp(try c.decode([SetupResult].self, forKey: .results))
         case "error": self = .error(try c.decode(String.self, forKey: .message))
         case let other:
             throw DecodingError.dataCorruptedError(
@@ -198,6 +219,7 @@ enum Request: Encodable, Sendable {
     case subscribe
     case gallery
     case targets
+    case setUp([String])
     case setWallpaper(path: String, origin: CGPoint?)
     case setMode(Mode)
     case configure(ConfigChange)
@@ -205,7 +227,7 @@ enum Request: Encodable, Sendable {
     case remove(String)
     case step(Direction)
 
-    private enum Keys: String, CodingKey { case cmd, path, paths, mode, change, origin, direction }
+    private enum Keys: String, CodingKey { case cmd, path, paths, mode, change, origin, direction, targets }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
@@ -216,6 +238,9 @@ enum Request: Encodable, Sendable {
             try c.encode("gallery", forKey: .cmd)
         case .targets:
             try c.encode("targets", forKey: .cmd)
+        case .setUp(let names):
+            try c.encode("set_up", forKey: .cmd)
+            try c.encode(names, forKey: .targets)
         case .setWallpaper(let path, let origin):
             try c.encode("set_wallpaper", forKey: .cmd)
             try c.encode(path, forKey: .path)

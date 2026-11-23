@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use obojeno_core::output::Dirs;
 
-use crate::programs;
+use crate::{macos, programs};
 
 /// What was found for one target.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -18,17 +18,26 @@ pub struct Found {
     pub options: BTreeMap<String, String>,
 }
 
-/// Where to look: the home folder and the folders with commands.
+/// Where to look: the home folder, the folders with commands, the login
+/// shell and the Nix profiles home-manager writes shell variables to.
 pub struct Places {
     pub dirs: Dirs,
     pub bin_dirs: Vec<PathBuf>,
+    pub shell: Option<PathBuf>,
+    pub nix_profiles: Vec<PathBuf>,
 }
 
 impl Places {
     pub fn of_this_user(dirs: &Dirs) -> Self {
+        let user = std::env::var("USER").unwrap_or_default();
         Self {
             dirs: dirs.clone(),
             bin_dirs: programs::search_dirs(&dirs.home),
+            shell: macos::login_shell(),
+            nix_profiles: vec![
+                dirs.home.join(".nix-profile"),
+                PathBuf::from(format!("/etc/profiles/per-user/{user}")),
+            ],
         }
     }
 
@@ -44,9 +53,76 @@ impl Places {
         })
     }
 
-    fn home(&self, path: &str) -> PathBuf {
+    pub fn home(&self, path: &str) -> PathBuf {
         self.dirs.home.join(path)
     }
+
+    /// The login shell's name, such as `zsh`.
+    pub fn shell_name(&self) -> Option<&str> {
+        self.shell.as_deref()?.file_name()?.to_str()
+    }
+}
+
+/// How the shell profiles set an environment variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variable {
+    Unset,
+    /// To one of obojeno's files.
+    Obojeno,
+    /// To something else.
+    Elsewhere,
+}
+
+/// How the shells' startup files, and home-manager's session variables, set
+/// `name`. Commented-out lines do not count.
+pub fn shell_variable(name: &str, places: &Places) -> Variable {
+    let fish = places.home(".config/fish");
+    let conf_d = std::fs::read_dir(fish.join("conf.d"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path());
+    let files = [
+        ".zshenv",
+        ".zprofile",
+        ".zshrc",
+        ".zlogin",
+        ".bash_profile",
+        ".bash_login",
+        ".profile",
+        ".bashrc",
+    ]
+    .into_iter()
+    .map(|file| places.home(file))
+    .chain([fish.join("config.fish")])
+    .chain(conf_d)
+    .chain(
+        places
+            .nix_profiles
+            .iter()
+            .map(|profile| profile.join("etc/profile.d/hm-session-vars.sh")),
+    );
+    let mut found = Variable::Unset;
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        for line in text.lines().map(str::trim) {
+            if !line.starts_with('#') && assigns(line, name) {
+                if line.contains("obojeno") {
+                    return Variable::Obojeno;
+                }
+                found = Variable::Elsewhere;
+            }
+        }
+    }
+    found
+}
+
+/// `export NAME=...`, `NAME=...` or fish's `set -gx NAME ...`.
+fn assigns(line: &str, name: &str) -> bool {
+    line.contains(&format!("{name}="))
+        || (line.starts_with("set ") && line.split_whitespace().any(|word| word == name))
 }
 
 pub fn find(target: &str, places: &Places) -> Found {
@@ -74,9 +150,11 @@ pub fn find(target: &str, places: &Places) -> Found {
         "starship" => {
             found.installed =
                 places.command("starship") || places.home(".config/starship.toml").exists();
+            found.set_up = Some(shell_variable("STARSHIP_CONFIG", places) == Variable::Obojeno);
         }
         "herdr" => {
             found.installed = places.command("herdr") || places.home(".config/herdr").is_dir();
+            found.set_up = Some(shell_variable("HERDR_CONFIG_PATH", places) == Variable::Obojeno);
         }
         "obsidian" => {
             let vaults = places.home("Library/Application Support/obsidian/obsidian.json");
@@ -102,10 +180,7 @@ pub fn find(target: &str, places: &Places) -> Found {
                     .insert("profile".to_owned(), places.dirs.abbreviate(&profile));
                 let prefs = std::fs::read_to_string(profile.join("prefs.js")).unwrap_or_default()
                     + &std::fs::read_to_string(profile.join("user.js")).unwrap_or_default();
-                found.set_up = Some(
-                    prefs
-                        .contains(r#""toolkit.legacyUserProfileCustomizations.stylesheets", true"#),
-                );
+                found.set_up = Some(stylesheets_on(&prefs));
             }
         }
         _ => {}
@@ -114,10 +189,20 @@ pub fn find(target: &str, places: &Places) -> Found {
 }
 
 /// An uncommented `include` of obojeno's kitty.conf.
-fn includes_obojeno(kitty_conf: &str) -> bool {
+pub fn includes_obojeno(kitty_conf: &str) -> bool {
     kitty_conf.lines().any(|line| {
         let line = line.trim();
         line.starts_with("include") && line.contains("obojeno/kitty.conf")
+    })
+}
+
+/// Whether prefs.js or user.js lines turn on userChrome.css, however they
+/// are spaced. Commented-out lines do not count.
+fn stylesheets_on(prefs: &str) -> bool {
+    prefs.lines().any(|line| {
+        let line: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        !line.starts_with("//")
+            && line.contains(r#""toolkit.legacyUserProfileCustomizations.stylesheets",true)"#)
     })
 }
 
@@ -200,6 +285,8 @@ mod tests {
                 config: home.join(".config/obojeno"),
             },
             bin_dirs: vec![home.join("bin")],
+            shell: Some(PathBuf::from("/bin/zsh")),
+            nix_profiles: vec![home.join(".nix-profile")],
         }
     }
 
@@ -251,6 +338,47 @@ mod tests {
     }
 
     #[test]
+    fn shell_variables_from_profiles_and_home_manager() {
+        let home = tempfile::tempdir().unwrap();
+        let places = places(home.path());
+        let starship = || shell_variable("STARSHIP_CONFIG", &places);
+        assert_eq!(starship(), Variable::Unset);
+        write(
+            &home.path().join(".zshrc"),
+            "# export STARSHIP_CONFIG=~/.cache/obojeno/starship.toml\necho $STARSHIP_CONFIG\n",
+        );
+        assert_eq!(
+            starship(),
+            Variable::Unset,
+            "comments and uses do not count"
+        );
+        write(
+            &home.path().join(".zshrc"),
+            "export STARSHIP_CONFIG=~/my/starship.toml\n",
+        );
+        assert_eq!(starship(), Variable::Elsewhere);
+        assert_eq!(find("starship", &places).set_up, Some(false));
+        write(
+            &home.path().join(".config/fish/conf.d/obojeno.fish"),
+            "set -gx STARSHIP_CONFIG ~/.cache/obojeno/starship.toml\n",
+        );
+        assert_eq!(
+            starship(),
+            Variable::Obojeno,
+            "obojeno's line counts wherever it is"
+        );
+        assert_eq!(find("starship", &places).set_up, Some(true));
+
+        write(
+            &home
+                .path()
+                .join(".nix-profile/etc/profile.d/hm-session-vars.sh"),
+            "export HERDR_CONFIG_PATH=\"/Users/me/.cache/obojeno/herdr.toml\"\n",
+        );
+        assert_eq!(find("herdr", &places).set_up, Some(true));
+    }
+
+    #[test]
     fn obsidian_prefers_the_open_vault_then_the_latest() {
         let json = r#"{"vaults":{
             "a":{"path":"/Users/me/Old","ts":300},
@@ -278,6 +406,22 @@ mod tests {
             Some(PathBuf::from("/elsewhere/b"))
         );
         assert_eq!(zen_profile("[General]\nVersion=2\n", root), None);
+    }
+
+    #[test]
+    fn zen_setting_however_it_is_spaced() {
+        assert!(stylesheets_on(
+            r#"user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);"#
+        ));
+        assert!(stylesheets_on(
+            "user_pref( \"toolkit.legacyUserProfileCustomizations.stylesheets\",true );"
+        ));
+        assert!(!stylesheets_on(
+            r#"// user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);"#
+        ));
+        assert!(!stylesheets_on(
+            r#"user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", false);"#
+        ));
     }
 
     #[test]

@@ -20,7 +20,7 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 12) {
             if model.connected, model.state != nil {
                 if model.needsWelcome {
-                    Page { WelcomeView() }
+                    Page(scrolls: false) { WelcomeView() }
                 } else if showingSettings {
                     Page { SettingsView { withAnimation(.snappy) { showingSettings = false } } }
                 } else {
@@ -49,13 +49,22 @@ struct PopoverView: View {
 /// A full-height page in place of the header and gallery, such as the
 /// settings.
 private struct Page<Content: View>: View {
+    /// Off for pages that scroll only part of themselves, to keep their
+    /// buttons in view.
+    var scrolls = true
     @ViewBuilder let content: Content
 
     var body: some View {
-        ScrollView {
-            content.padding(.bottom, 4)
+        Group {
+            if scrolls {
+                ScrollView {
+                    content.padding(.bottom, 4)
+                }
+                .scrollIndicators(.never)
+            } else {
+                content
+            }
         }
-        .scrollIndicators(.never)
         // As tall as the header and gallery together.
         .frame(height: PopoverSize.contentHeight + 44)
     }

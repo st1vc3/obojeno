@@ -26,21 +26,25 @@ permissions:
 jobs:
   release:
     runs-on: macos-26
+    # Each secret goes only to the steps that use it, never to the job: the
+    # build runs every dependency's build script, and a leaked update key
+    # would let anyone sign updates that every installed app accepts. The
+    # job only knows which secrets are set.
     env:
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-      TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
-      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+      HAS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAS_NOTARIZATION: ${{ secrets.APPLE_ID != '' }}
+      HAS_TAP_TOKEN: ${{ secrets.TAP_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v7
+      # Third-party code runs here with the job's token, so actions are
+      # pinned to commits (Dependabot updates them).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # All tags and history, for the release notes.
           fetch-depth: 0
 
       - name: Require the update signing key
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
           if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
             echo "::error::SPARKLE_PRIVATE_KEY is not set: installed apps could not update to this release"
@@ -56,13 +60,16 @@ jobs:
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Import the signing certificate
-        if: env.APPLE_CERTIFICATE != ''
+        if: env.HAS_CERTIFICATE == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           keychain="$RUNNER_TEMP/signing.keychain-db"
           password="$(uuidgen)"
@@ -87,7 +94,11 @@ jobs:
         run: test "$(target/Obojeno.app/Contents/Helpers/obojeno --version)" = "obojeno $VERSION"
 
       - name: Notarize
-        if: env.SIGN_IDENTITY != '' && env.APPLE_ID != ''
+        if: env.SIGN_IDENTITY != '' && env.HAS_NOTARIZATION == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           ditto -c -k --keepParent target/Obojeno.app "$RUNNER_TEMP/notarize.zip"
           xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait \
@@ -111,6 +122,7 @@ jobs:
       - name: Update feed
         env:
           GH_TOKEN: ${{ github.token }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
           # sign_update from the Sparkle version the app is built with.
           sparkle="$(sed -n 's/.*"version" : "\(.*\)".*/\1/p' app/Package.resolved | head -1)"
@@ -130,7 +142,9 @@ jobs:
             --notes-file "$RUNNER_TEMP/notes.md"
 
       - name: Update the Homebrew cask
-        if: env.TAP_TOKEN != ''
+        if: env.HAS_TAP_TOKEN == 'true'
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
         run: |
           git clone "https://x-access-token:$TAP_TOKEN@github.com/st1vc3/homebrew-tap.git" "$RUNNER_TEMP/tap"
           mkdir -p "$RUNNER_TEMP/tap/Casks"

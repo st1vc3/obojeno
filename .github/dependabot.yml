@@ -16,3 +16,11 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+  # Sparkle, which installs the app's updates.
+  - package-ecosystem: swift
+    directory: /app
+    schedule:
+      interval: weekly
+    groups:
+      packages:
+        patterns: ["*"]
